@@ -1,15 +1,16 @@
 # Leaves: Distributed ID Generation Service
 
-This is a unofficial port for [Leaf](https://github.com/Meituan-Dianping/Leaf).
+This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 
-### 🏠 [Homepage](https://github.com/songzhi/leaves)
+🏠 [Homepage](https://github.com/songzhi/leaves)
+[![Latest version](https://img.shields.io/crates/v/leaves.svg)](https://crates.io/crates/leaves)
 
 ## Features
-*[x] generate id in segment mode
-*[ ] generate id in snowflake mode 
-*[x] using mysql 
-*[ ] using redis
-*[ ] http server or rpc service(actually just implement it by yourself 😂)
+- [x] generate id in segment mode
+- [ ] generate id in snowflake mode 
+- [x] using mysql 
+- [ ] using redis
+- [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
 * more configurable
