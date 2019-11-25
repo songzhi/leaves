@@ -7,7 +7,7 @@ repository = "https://github.com/songzhi/leaves"
 readme = "README.md"
 keywords = ["distribution", "id"]
 license = "MIT"
-description = "Set wallpaper periodically."
+description = "Distributed ID Generation Service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
