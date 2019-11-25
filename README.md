@@ -15,7 +15,8 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 ## TODO
 * more configurable
 * using tokio's Rwlock in the future.
-
+* performance
+* make `mysql_async` optional
 ## Example
 ```rust
 use leaves::dao::mysql::MySqlLeafDao;
@@ -35,5 +36,5 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-Not yet.But in my PC and database locating on remote server,I used 10 threads and each one loop 1000 times.
-It costs 800μs.
+Not yet.But in my PC and local database,I used 10 tasks and each one loop 1000 times.
+It costs 700ms.
