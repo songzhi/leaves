@@ -1,6 +1,6 @@
 [package]
 name = "leaves"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["lsongzhi <lsongzhi@163.com>"]
 edition = "2018"
 repository = "https://github.com/songzhi/leaves"
@@ -10,11 +10,16 @@ license = "MIT"
 description = "Distributed ID Generation Service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+mysql = ["mysql_async"]
+redis = ["redis-async"]
+
 [dependencies]
 tokio = "0.2.0-alpha.6"
 async-trait = "0.1.18"
-mysql_async = "0.21.0-alpha.4"
 async-std = "1.1.0"
 log = "0.4"
 pretty_env_logger = "0.3"
 lockfree = "0.5.1"
+mysql_async = { version="0.21.0-alpha.4", optional=true }
+redis-async = { version="0.5.2", optional=true }
