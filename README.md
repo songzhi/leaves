@@ -10,14 +10,14 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 - [x] generate id in segment mode
 - [ ] generate id in snowflake mode 
 - [x] using mysql 
-- [ ] using redis
+- [x] using redis
 - [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
 * more configurable
 * using tokio's Rwlock in the future.
 * performance
-* make `mysql_async` optional
+
 ## Example
 ```rust
 use leaves::dao::mysql::MySqlLeafDao;
@@ -38,4 +38,4 @@ async main() -> Result<()> {
 
 ## Benchmark
 Not yet.But in my PC and local database,I used 10 tasks and each one loop 1000 times.
-It costs 700ms.
+It costs 400ms.
