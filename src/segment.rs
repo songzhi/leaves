@@ -9,10 +9,13 @@ pub struct Segment {
     pub step: u32,
 }
 
-
 impl fmt::Display for Segment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        write!(f, "Segment(val={:?},max={},step={})", self.val, self.max, self.step)
+        write!(
+            f,
+            "Segment(val={:?},max={},step={})",
+            self.val, self.max, self.step
+        )
     }
 }
 

@@ -18,5 +18,7 @@ impl From<mysql_async::error::Error> for Error {
 
 #[cfg(feature = "redis")]
 impl From<redis_async::error::Error> for Error {
-    fn from(err: redis_async::error::Error) -> Self { Self::RedisError(err) }
+    fn from(err: redis_async::error::Error) -> Self {
+        Self::RedisError(err)
+    }
 }

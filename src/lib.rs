@@ -10,9 +10,9 @@ use async_trait::async_trait;
 pub use error::Error;
 use segment::SegmentBuffer;
 
-pub mod segment;
-pub mod error;
 pub mod dao;
+pub mod error;
+pub mod segment;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -60,12 +60,16 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-
     pub async fn get(&self, tag: u32) -> Result<u64> {
         if !self.init_ok {
             return Err(Error::ServiceNotReady);
         }
-        let buffer = self.cache.get(&tag).ok_or_else(|| Error::TagNotExist)?.val().clone();
+        let buffer = self
+            .cache
+            .get(&tag)
+            .ok_or_else(|| Error::TagNotExist)?
+            .val()
+            .clone();
         if !buffer.read().await.init_ok {
             log::info!("Init Buffer[{}]", tag);
             Self::update_segment_from_db(self.dao.clone(), buffer, false, true).await?;
@@ -76,11 +80,14 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     fn update_cache_every_minute(&self) {
         let cache = self.cache.clone();
         let dao = self.dao.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::timer::Interval::new_interval(Duration::from_secs(60));
+        tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
-                interval.next().await;
-                if Self::update_cache(cache.clone(), dao.clone()).await.is_err() {
+                interval.tick().await;
+                if Self::update_cache(cache.clone(), dao.clone())
+                    .await
+                    .is_err()
+                {
                     log::error!("Update cache failed");
                 }
             }
@@ -90,12 +97,20 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     async fn update_cache(cache: Cache, dao: Arc<D>) -> Result<()> {
         log::info!("Update cache");
         let db_tags = dao.tags().await?;
-        if db_tags.is_empty() { return Ok(()); }
+        if db_tags.is_empty() {
+            return Ok(());
+        }
         let cache_tags = cache.iter().map(|e| *e.key());
-        let insert_tags = db_tags.iter().copied().filter(|t| cache.get(t).is_none()).collect::<Vec<_>>();
-        let remove_tags = cache_tags.filter(|t| !db_tags.contains(t)).collect::<Vec<_>>();
+        let insert_tags = db_tags
+            .iter()
+            .copied()
+            .filter(|t| cache.get(t).is_none())
+            .collect::<Vec<_>>();
+        let remove_tags = cache_tags
+            .filter(|t| !db_tags.contains(t))
+            .collect::<Vec<_>>();
         for t in insert_tags {
-            log::info!("Add tag[{}] to cache",t);
+            log::info!("Add tag[{}] to cache", t);
             cache.insert(t, Arc::new(RwLock::new(SegmentBuffer::new(t))));
         }
         for t in remove_tags {
@@ -106,15 +121,27 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     }
 
     pub async fn get_id_from_segment_buffer(&self, tag: u32) -> Result<u64> {
-        let buffer_wrapped = self.cache.get(&tag).ok_or_else(|| Error::TagNotExist)?.val().clone();
+        let buffer_wrapped = self
+            .cache
+            .get(&tag)
+            .ok_or_else(|| Error::TagNotExist)?
+            .val()
+            .clone();
         let buffer = buffer_wrapped.read().await;
         let segment = buffer.current();
-        if !buffer.next_ready && (segment.idle() < (segment.step * 9 / 10) as u64) &&
-            !buffer.thread_running.compare_and_swap(false, true, Ordering::Relaxed) {
+        if !buffer.next_ready
+            && (segment.idle() < (segment.step * 9 / 10) as u64)
+            && !buffer
+            .thread_running
+            .compare_and_swap(false, true, Ordering::Relaxed)
+        {
             let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
-            tokio::spawn(async move {
-                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false).await.is_ok() {
+            tokio::task::spawn(async move {
+                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false)
+                    .await
+                    .is_ok()
+                {
                     log::info!("Update Buffer[{}]'s next segment from DB", tag);
                     let mut buffer = buffer_wrapped.write().await;
                     buffer.next_ready = true;
@@ -145,7 +172,12 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         }
     }
 
-    pub async fn update_segment_from_db(dao: Arc<D>, buffer: Arc<RwLock<SegmentBuffer>>, is_next: bool, is_init: bool) -> Result<()> {
+    pub async fn update_segment_from_db(
+        dao: Arc<D>,
+        buffer: Arc<RwLock<SegmentBuffer>>,
+        is_next: bool,
+        is_init: bool,
+    ) -> Result<()> {
         let mut buffer = buffer.write().await;
         if is_init && buffer.init_ok {
             return Ok(());
@@ -158,31 +190,52 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             leaf
         } else if buffer.update_timestamp == 0 {
             let leaf = dao.update_max(buffer.tag).await?;
-            buffer.update_timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+            buffer.update_timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
             buffer.step = leaf.step;
             buffer.min_step = leaf.step;
             leaf
         } else {
-            let duration = SystemTime::now().duration_since(
-                SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as u64)).unwrap();
+            let duration = SystemTime::now()
+                .duration_since(
+                    SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as u64),
+                )
+                .unwrap();
             let step = buffer.step;
-            let next_step =
-                if duration < Self::SEGMENT_DURATION && step * 2 <= Self::MAX_STEP {
-                    step * 2
-                } else if duration >= Self::SEGMENT_DURATION * 2 && step / 2 >= buffer.min_step {
-                    step / 2
-                } else { step };
-            log::info!("Buffer[{}] step:{} duration:{:.2}mins next_step:{}",
-                buffer.tag, step, duration.as_secs() as f64 / 60.0, next_step);
+            let next_step = if duration < Self::SEGMENT_DURATION && step * 2 <= Self::MAX_STEP {
+                step * 2
+            } else if duration >= Self::SEGMENT_DURATION * 2 && step / 2 >= buffer.min_step {
+                step / 2
+            } else {
+                step
+            };
+            log::info!(
+                "Buffer[{}] step:{} duration:{:.2}mins next_step:{}",
+                buffer.tag,
+                step,
+                duration.as_secs() as f64 / 60.0,
+                next_step
+            );
             let leaf = dao.update_max_by_step(buffer.tag, next_step).await?;
-            buffer.update_timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+            buffer.update_timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
             buffer.step = next_step;
             buffer.min_step = leaf.step;
             leaf
         };
         let step = buffer.step;
-        let segment = if is_next { buffer.next_mut() } else { buffer.current_mut() };
-        segment.val.store(leaf.max_id - step as u64, Ordering::Relaxed);
+        let segment = if is_next {
+            buffer.next_mut()
+        } else {
+            buffer.current_mut()
+        };
+        segment
+            .val
+            .store(leaf.max_id - step as u64, Ordering::Relaxed);
         segment.max = leaf.max_id;
         segment.step = step;
         Ok(())
@@ -190,12 +243,18 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
 
     async fn wait_and_sleep(&self, tag: u32) -> Result<()> {
         let mut roll = 0;
-        let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.val().clone();
+        let buffer = self
+            .cache
+            .get(&tag)
+            .ok_or(Error::TagNotExist)?
+            .val()
+            .clone();
         let buffer = buffer.read().await;
+        let mut interval = tokio::time::interval(Duration::from_millis(10));
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
             if roll > 10_000 {
-                tokio::timer::delay_for(Duration::from_millis(10)).await;
+                interval.tick().await;
                 break;
             }
         }
