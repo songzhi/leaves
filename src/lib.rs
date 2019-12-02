@@ -37,7 +37,7 @@ type Cache = Arc<Map<u32, Arc<RwLock<SegmentBuffer>>>>;
 pub struct LeafSegment<D> {
     dao: Arc<D>,
     init_ok: bool,
-    cache: Cache,
+    pub cache: Cache,
 }
 
 impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
