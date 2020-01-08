@@ -15,8 +15,8 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 
 ## TODO
 * more configurable
-* using tokio's Rwlock in the future.
 * performance
+* MongoDB
 
 ## Example
 ```rust

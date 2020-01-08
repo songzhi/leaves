@@ -1,7 +1,7 @@
-use async_std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use async_std::sync::Arc;
 use leaves::dao::mysql::MySqlLeafDao;
 use leaves::LeafSegment;
 

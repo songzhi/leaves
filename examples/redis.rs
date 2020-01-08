@@ -1,8 +1,8 @@
-use async_std::net::SocketAddr;
-use async_std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
-use leaves::{LeafSegment, Result};
 use leaves::dao::redis::RedisDao;
+use leaves::{LeafSegment, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,10 +1,9 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-// use tokio's Rwlock in the future
-use async_std::sync::RwLock;
 use lockfree::map::Map;
+use tokio::sync::RwLock;
 
 use async_trait::async_trait;
 pub use error::Error;
@@ -132,8 +131,8 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as u64)
             && !buffer
-            .thread_running
-            .compare_and_swap(false, true, Ordering::Relaxed)
+                .thread_running
+                .compare_and_swap(false, true, Ordering::Relaxed)
         {
             let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();

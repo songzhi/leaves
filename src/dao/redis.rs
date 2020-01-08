@@ -1,7 +1,7 @@
 use std::fmt::Display;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use async_std::sync::Arc;
 use redis_async::client::{paired_connect, PairedConnection};
 use redis_async::resp_array;
 
