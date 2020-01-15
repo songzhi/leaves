@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use lockfree::map::Map;
+use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ pub trait LeafDao {
     async fn update_max_by_step(&self, tag: u32, step: u32) -> Result<Leaf>;
 }
 
-type Cache = Arc<Map<u32, Arc<RwLock<SegmentBuffer>>>>;
+type Cache = Arc<DashMap<u32, Arc<RwLock<SegmentBuffer>>>>;
 
 pub struct LeafSegment<D> {
     dao: Arc<D>,
@@ -47,7 +47,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Self {
             dao,
             init_ok: false,
-            cache: Arc::new(Map::new()),
+            cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -67,7 +67,6 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             .cache
             .get(&tag)
             .ok_or_else(|| Error::TagNotExist)?
-            .val()
             .clone();
         if !buffer.read().await.init_ok {
             log::info!("Init Buffer[{}]", tag);
@@ -124,7 +123,6 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             .cache
             .get(&tag)
             .ok_or_else(|| Error::TagNotExist)?
-            .val()
             .clone();
         let buffer = buffer_wrapped.read().await;
         let segment = buffer.current();
@@ -242,12 +240,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
 
     async fn wait_and_sleep(&self, tag: u32) -> Result<()> {
         let mut roll = 0;
-        let buffer = self
-            .cache
-            .get(&tag)
-            .ok_or(Error::TagNotExist)?
-            .val()
-            .clone();
+        let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
         let buffer = buffer.read().await;
         let mut interval = tokio::time::interval(Duration::from_millis(10));
         while buffer.thread_running.load(Ordering::Relaxed) {
