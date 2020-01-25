@@ -1,34 +1,38 @@
 [package]
 name = "leaves"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["lsongzhi <lsongzhi@163.com>"]
 edition = "2018"
 repository = "https://github.com/songzhi/leaves"
 readme = "README.md"
-keywords = ["distribution", "id"]
+keywords = ["distribution", "id", "async", "await"]
 license = "MIT"
 description = "Distributed ID Generation Service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-mysql = ["mysql_async"]
-redis = ["redis-async"]
+mysql = ["sqlx", "sqlx/mysql"]
+postgres = ["sqlx", "sqlx/postgres"]
+redis = ["runtime-tokio", "redis-async"]
+runtime-tokio = ["tokio", "sqlx/runtime-tokio"]
+runtime-async-std = ["async-std", "sqlx/runtime-async-std"]
 
 [dependencies]
-tokio = { version="0.2.9", features=["time", "rt-core", "sync", "macros"] }
+tokio = { version="0.2.9", features=["time", "rt-core", "sync"], optional=true }
+async-std = { version = "1.4.0", optional=true  }
 async-trait = "0.1"
 log = "0.4"
 pretty_env_logger = "0.3"
 dashmap = "3.0"
-mysql_async = { version="0.21", optional=true }
 redis-async = { version="0.6", optional=true }
+sqlx = { version="0.2.0", default-features = false, optional=true }
 
 [[example]]
 name = "redis"
 path = "examples/redis.rs"
-required-features = ["redis"]
+required-features = ["redis", "tokio/macros"]
 
 [[example]]
 name = "mysql"
 path = "examples/mysql.rs"
-required-features = ["mysql"]
+required-features = ["mysql", "runtime-tokio", "tokio/macros"]

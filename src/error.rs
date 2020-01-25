@@ -3,16 +3,16 @@ pub enum Error {
     TagNotExist,
     BothSegmentsNotReady,
     ServiceNotReady,
-    #[cfg(feature = "mysql")]
-    MySqlError(mysql_async::error::Error),
+    #[cfg(any(feature = "mysql", feature = "postgres"))]
+    SqlXError(sqlx::error::Error),
     #[cfg(feature = "redis")]
     RedisError(redis_async::error::Error),
 }
 
-#[cfg(feature = "mysql")]
-impl From<mysql_async::error::Error> for Error {
-    fn from(err: mysql_async::error::Error) -> Self {
-        Self::MySqlError(err)
+#[cfg(any(feature = "mysql", feature = "postgres"))]
+impl From<sqlx::error::Error> for Error {
+    fn from(err: sqlx::error::Error) -> Self {
+        Self::SqlXError(err)
     }
 }
 

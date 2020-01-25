@@ -9,8 +9,10 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 ## Features
 - [x] generate id in segment mode
 - [ ] generate id in snowflake mode 
-- [x] using mysql 
-- [x] using redis
+- [x] mysql 
+- [x] redis
+- [x] postgres
+- [x] runtime-agnostic(tokio or async-std) when using mysql or postgres
 - [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
@@ -19,6 +21,7 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 * MongoDB
 
 ## Example
+Enabling the `mysql` and `runtime-tokio` feature:
 ```rust
 use leaves::dao::mysql::MySqlLeafDao;
 use leaves::LeafSegment;
@@ -26,7 +29,7 @@ use leaves::Result;
 
 #[tokio::main]
 async main() -> Result<()> {
-    let dao = Arc::new(MySqlLeafDao::new("mysql://...")?);
+    let dao = Arc::new(MySqlLeafDao::new("mysql://...").await?);
     let mut service = LeafSegment::new(dao);
     service.init().await?;
     let tag = 1;

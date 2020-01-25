@@ -1,16 +1,16 @@
 use sqlx::row::Row;
-use sqlx::{MySqlConnection, Pool};
+use sqlx::{PgConnection, Pool};
 
 use async_trait::async_trait;
 
 use crate::{Leaf, LeafDao, Result};
 
-pub struct MySqlLeafDao {
-    pool: Pool<MySqlConnection>,
+pub struct PgLeafDao {
+    pool: Pool<PgConnection>,
 }
 
 #[async_trait]
-impl LeafDao for MySqlLeafDao {
+impl LeafDao for PgLeafDao {
     async fn leaves(&self) -> Result<Vec<Leaf>> {
         let mut conn = self.pool.acquire().await?;
         let rows = sqlx::query("SELECT tag, max_id, step FROM leaf_alloc")
@@ -56,7 +56,7 @@ impl LeafDao for MySqlLeafDao {
     }
 }
 
-impl MySqlLeafDao {
+impl PgLeafDao {
     pub async fn new(db_url: &str) -> Result<Self> {
         Ok(Self {
             pool: Pool::new(db_url).await?,
