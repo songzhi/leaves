@@ -2,12 +2,21 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+#[cfg(feature = "runtime-async-std")]
+use async_std::sync::RwLock;
 use dashmap::DashMap;
+#[cfg(feature = "runtime-tokio")]
 use tokio::sync::RwLock;
 
 use async_trait::async_trait;
 pub use error::Error;
 use segment::SegmentBuffer;
+
+#[cfg(not(any(feature = "runtime-tokio", feature = "runtime-async-std")))]
+compile_error!("one of 'runtime-async-std' or 'runtime-tokio' features must be enabled");
+
+#[cfg(all(feature = "runtime-tokio", feature = "runtime-async-std"))]
+compile_error!("only one of 'runtime-async-std' or 'runtime-tokio' features must be enabled");
 
 pub mod dao;
 pub mod error;
