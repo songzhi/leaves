@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "runtime-async-std")]
-use async_std::sync::RwLock;
+use async_std::{sync::RwLock, task::spawn};
 use dashmap::DashMap;
 #[cfg(feature = "runtime-tokio")]
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, task::spawn};
 
 use async_trait::async_trait;
 pub use error::Error;
@@ -26,6 +26,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// data stored in DB
 #[derive(Debug)]
+#[cfg_attr(
+    any(feature = "mysql", feature = "postgres", feature = "sqlite"),
+    derive(sqlx::FromRow)
+)]
 pub struct Leaf {
     tag: u32,
     max_id: u64,
@@ -87,7 +91,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     fn update_cache_every_minute(&self) {
         let cache = self.cache.clone();
         let dao = self.dao.clone();
-        tokio::task::spawn(async move {
+        spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
@@ -143,7 +147,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         {
             let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
-            tokio::task::spawn(async move {
+            spawn(async move {
                 if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false)
                     .await
                     .is_ok()
@@ -251,11 +255,17 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         let mut roll = 0;
         let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
         let buffer = buffer.read().await;
-        let mut interval = tokio::time::interval(Duration::from_millis(10));
+        let delay_duration = Duration::from_millis(10);
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
             if roll > 10_000 {
-                interval.tick().await;
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "runtime-async-std")] {
+                        async_std::task::sleep(delay_duration).await;
+                    } else if #[cfg(feature = "runtime-tokio")] {
+                        tokio::time::delay_for(delay_duration).await;
+                    }
+                }
                 break;
             }
         }

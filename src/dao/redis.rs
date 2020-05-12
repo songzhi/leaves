@@ -1,9 +1,7 @@
-use std::fmt::Display;
-use std::net::SocketAddr;
-use std::sync::Arc;
+// use futures_util::StreamExt;
+use std::convert::{TryFrom, TryInto};
 
-use redis_async::client::{paired_connect, PairedConnection};
-use redis_async::resp_array;
+use darkredis::{Command, ConnectionPool, Value};
 
 use async_trait::async_trait;
 
@@ -12,20 +10,36 @@ use crate::{Error, Leaf, LeafDao, Result};
 /// Each leaf will be a hashmap with a key like `leaf_alloc:*`.
 #[derive(Debug)]
 pub struct RedisDao {
-    conn: Arc<PairedConnection>,
+    pool: darkredis::ConnectionPool,
+}
+
+impl TryFrom<Value> for Leaf {
+    type Error = Error;
+
+    fn try_from(value: Value) -> Result<Self> {
+        let (tag, max_id, step) = value
+            .optional_array()
+            .and_then(|values| {
+                let mut values = values.into_iter();
+                let (tag, max_id, step) = (values.next()?, values.next()?, values.next()?);
+                Some((
+                    tag.optional_integer().map(|v| v as u32)?,
+                    max_id.optional_integer().map(|v| v as u64)?,
+                    step.optional_integer().map(|v| v as u32)?,
+                ))
+            })
+            .ok_or(Error::SerializationError)?;
+
+        Ok(Self { tag, max_id, step })
+    }
 }
 
 #[async_trait]
 impl LeafDao for RedisDao {
     async fn leaves(&self) -> Result<Vec<Leaf>> {
-        let tags: Vec<String> = self.conn.send(resp_array!("KEYS", "leaf_alloc:*")).await?;
-        let conn = self.conn.clone();
-        let tasks = tags
-            .into_iter()
-            .map(|t| tokio::task::spawn(Self::get_leaf(conn.clone(), t)));
         let mut leaves = vec![];
-        for task in tasks {
-            if let Ok(Some(leaf)) = task.await {
+        for tag in self.tags().await? {
+            if let Some(leaf) = self.get_leaf(tag).await {
                 leaves.push(leaf);
             }
         }
@@ -33,92 +47,63 @@ impl LeafDao for RedisDao {
     }
 
     async fn tags(&self) -> Result<Vec<u32>> {
-        Ok(self
-            .conn
-            .send::<Vec<String>>(resp_array!("KEYS", "leaf_alloc:*"))
-            .await?
-            .into_iter()
-            .map(|t| t["leaf_alloc:".len()..].parse())
-            .flatten()
-            .collect())
+        let mut conn = self.pool.get().await;
+        let command = Command::new("KEYS").arg(b"leaf_alloc:*");
+        if let Value::Array(tags) = conn.run_command(command).await? {
+            Ok(tags
+                .into_iter()
+                .map(|v| v.optional_integer().map(|v| v as u32))
+                .flatten()
+                .collect::<Vec<u32>>())
+        } else {
+            Err(Error::SerializationError)
+        }
     }
 
     async fn update_max(&self, tag: u32) -> Result<Leaf> {
-        let step: u32 = self
-            .conn
-            .send::<String>(resp_array!("HGET", format!("leaf_alloc:{}", tag), "step"))
-            .await?
-            .parse()
-            .or(Err(Error::TagNotExist))?;
+        let step = self.get_leaf(tag).await.map(|l| l.step).unwrap_or(1000);
         self.update_max_by_step(tag, step).await
     }
 
     async fn update_max_by_step(&self, tag: u32, step: u32) -> Result<Leaf> {
-        self.conn
-            .send::<String>(resp_array!(
-                "HINCRBY",
-                format!("leaf_alloc:{}", tag),
-                "max_id",
-                format!("{}", step)
-            ))
+        let mut conn = self.pool.get().await;
+        conn.hincrby(format!("leaf_alloc:{}", tag), b"max_id", step as isize)
             .await?;
-        Self::get_leaf(self.conn.clone(), tag)
-            .await
-            .ok_or(Error::TagNotExist)
+        self.get_leaf(tag).await.ok_or(Error::TagNotExist)
     }
 }
 
 impl RedisDao {
-    pub async fn new(addr: &SocketAddr) -> Result<Self> {
+    pub async fn new(address: impl Into<String>, password: Option<&str>) -> Result<Self> {
         Ok(Self {
-            conn: Arc::new(paired_connect(addr).await?),
+            pool: ConnectionPool::create(address.into(), password, num_cpus::get()).await?,
         })
     }
 
-    pub async fn auth(&self, password: &str) -> Result<()> {
-        self.conn.send(resp_array!("AUTH", password)).await?;
-        Ok(())
-    }
-
-    pub async fn select_db(&self, db: &str) -> Result<()> {
-        self.conn.send(resp_array!("SELECT", db)).await?;
-        Ok(())
-    }
-
-    pub async fn get_leaf<T: Display>(conn: Arc<PairedConnection>, tag: T) -> Option<Leaf> {
-        let data = conn
-            .send::<Vec<String>>(resp_array!(
-                "HMGET",
-                format!("leaf_alloc:{}", tag),
-                "tag",
-                "max_id",
-                "step"
-            ))
+    pub async fn get_leaf(&self, tag: u32) -> Option<Leaf> {
+        let mut conn = self.pool.get().await;
+        let key = format!("leaf_alloc:{}", tag);
+        let command = Command::new("HMGET")
+            .arg(&key)
+            .arg(b"tag")
+            .arg(b"max_id")
+            .arg(b"step");
+        conn.run_command(command)
             .await
-            .ok()?;
-        if data.len() != 3 {
-            None
-        } else {
-            Some(Leaf {
-                tag: data[0].parse().ok()?,
-                max_id: data[1].parse().ok()?,
-                step: data[2].parse().ok()?,
-            })
-        }
+            .ok()
+            .and_then(|v| v.try_into().ok())
     }
-    pub async fn create_leaf<T: Display>(&self, tag: T) -> Result<()> {
-        self.conn
-            .send::<()>(resp_array!(
-                "HMSET",
-                format!("leaf_alloc:{}", tag),
-                "tag",
-                format!("{}", tag),
-                "max_id",
-                "1000",
-                "step",
-                "1000"
-            ))
-            .await?;
+    pub async fn create_leaf(&self, tag: u32) -> Result<()> {
+        let mut conn = self.pool.get().await;
+        let key = format!("leaf_alloc:{}", tag).into_bytes();
+        let tag_bytes = tag.to_string().into_bytes();
+        let args: [&[u8]; 4] = [b"max_id", b"1000", b"step", b"1000"];
+        let command = Command::new("HMSET")
+            .arg(&key)
+            .arg(b"tag")
+            .arg(&tag_bytes)
+            .args(&args);
+        conn.run_command(command).await?;
         Ok(())
     }
 }

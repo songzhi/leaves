@@ -8,7 +8,6 @@ use leaves::LeafSegment;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    pretty_env_logger::init();
     let dao = Arc::new(
         MySqlLeafDao::new("mysql://root:12138@localhost:3306/course")
             .await

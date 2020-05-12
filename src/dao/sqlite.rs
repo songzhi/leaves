@@ -1,15 +1,16 @@
-use sqlx::mysql::{MySqlPool, MySqlQueryAs};
+use sqlx::row::Row;
+use sqlx::sqlite::{SqlitePool, SqliteQueryAs};
 
 use async_trait::async_trait;
 
 use crate::{Leaf, LeafDao, Result};
 
-pub struct MySqlLeafDao {
-    pool: MySqlPool,
+pub struct PgLeafDao {
+    pool: SqlitePool,
 }
 
 #[async_trait]
-impl LeafDao for MySqlLeafDao {
+impl LeafDao for PgLeafDao {
     async fn leaves(&self) -> Result<Vec<Leaf>> {
         let mut conn = self.pool.acquire().await?;
         let leaves: Vec<Leaf> = sqlx::query_as("SELECT tag, max_id, step FROM leaf_alloc")
@@ -46,16 +47,16 @@ impl LeafDao for MySqlLeafDao {
     }
 }
 
-impl MySqlLeafDao {
+impl PgLeafDao {
     pub async fn new(db_url: &str) -> Result<Self> {
         Ok(Self {
-            pool: MySqlPool::new(db_url).await?,
+            pool: SqlitePool::new(db_url).await?,
         })
     }
 
     async fn get_leaf(&self, tag: u32) -> Result<Leaf> {
         let mut conn = self.pool.acquire().await?;
-        let leaf: Leaf = sqlx::query_as("SELECT tag, max_id, step FROM leaf_alloc WHERE tag = ?")
+        let leaf: Leaf = sqlx::query("SELECT tag, max_id, step FROM leaf_alloc WHERE tag = ?")
             .bind(tag)
             .fetch_one(&mut conn)
             .await?;

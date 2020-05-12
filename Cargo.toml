@@ -1,6 +1,6 @@
 [package]
 name = "leaves"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["lsongzhi <lsongzhi@163.com>"]
 edition = "2018"
 repository = "https://github.com/songzhi/leaves"
@@ -14,19 +14,27 @@ description = "Distributed ID Generation Service"
 default = ["runtime-tokio"]
 mysql = ["sqlx", "sqlx/mysql"]
 postgres = ["sqlx", "sqlx/postgres"]
-redis = ["runtime-tokio", "redis-async"]
-runtime-tokio = ["tokio", "sqlx/runtime-tokio"]
-runtime-async-std = ["async-std", "sqlx/runtime-async-std"]
+sqlite = ["sqlx", "sqlx/sqlite"]
+redis = ["darkredis"]
+mongo = ["mongodb", "bson"]
+runtime-tokio = ["tokio", "sqlx/runtime-tokio", "darkredis/runtime_tokio", "mongodb/tokio-runtime"]
+runtime-async-std = ["async-std", "sqlx/runtime-async-std", "darkredis/runtime_async_std", "mongodb/async-std-runtime"]
 
 [dependencies]
-tokio = { version="0.2.9", features=["time", "rt-core", "sync"], optional=true }
-async-std = { version = "1.4.0", optional=true  }
 async-trait = "0.1"
 log = "0.4"
-pretty_env_logger = "0.3"
-dashmap = "3.0"
-redis-async = { version="0.6", optional=true }
-sqlx = { version="0.2.4", default-features = false, optional=true }
+dashmap = "3.9"
+num_cpus = "1.12"
+cfg-if = "0.1"
+
+tokio = { version="0.2.20", features=["time", "sync", "rt-threaded"], optional=true }
+async-std = { version = "1.5.0", optional=true  }
+
+darkredis = { version="0.7", default-features = false, optional=true}
+sqlx = { version="0.3", default-features = false, features=["macros"] , optional=true }
+mongodb = { version="0.10", default-features = false, optional=true }
+bson = { version="0.14", optional=true }
+
 
 [[example]]
 name = "redis"
