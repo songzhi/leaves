@@ -19,4 +19,10 @@ pub enum Error {
     #[cfg(feature = "mongo")]
     #[error("mongodb error")]
     MongoDB(#[from] mongodb::error::Error),
+    #[cfg(feature = "mongo")]
+    #[error("bson encoder error")]
+    BsonEncode(#[from] bson::EncoderError),
+    #[cfg(feature = "mongo")]
+    #[error("bson decoder error")]
+    BsonDecode(#[from] bson::DecoderError),
 }

@@ -178,7 +178,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         } else {
             let duration = SystemTime::now()
                 .duration_since(
-                    SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as i64),
+                    SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as u64),
                 )
                 .unwrap();
             let step = buffer.step;
