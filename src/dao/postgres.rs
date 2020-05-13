@@ -18,16 +18,34 @@ impl LeafDao for PgLeafDao {
             .await?;
         Ok(leaves)
     }
-
-    async fn tags(&self) -> Result<Vec<u32>> {
+    async fn leaf(&self, tag: i32) -> Result<Leaf> {
         let mut conn = self.pool.acquire().await?;
-        let rows: Vec<(u32,)> = sqlx::query_as("SELECT tag FROM leaf_alloc")
+        let leaf: Leaf = sqlx::query_as("SELECT tag, max_id, step FROM leaf_alloc WHERE tag = ?")
+            .bind(tag)
+            .fetch_one(&mut conn)
+            .await?;
+        Ok(leaf)
+    }
+
+    async fn insert(&self, leaf: Leaf) -> Result<()> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("INSERT INTO leaf_alloc (tag, max_id, step) VALUES (?, ?, ?)")
+            .bind(leaf.tag)
+            .bind(leaf.max_id)
+            .bind(leaf.step)
+            .execute(&mut conn)
+            .await?;
+        Ok(())
+    }
+    async fn tags(&self) -> Result<Vec<i32>> {
+        let mut conn = self.pool.acquire().await?;
+        let rows: Vec<(i32,)> = sqlx::query_as("SELECT tag FROM leaf_alloc")
             .fetch_all(&mut conn)
             .await?;
         Ok(rows.into_iter().map(|row| row.0).collect())
     }
 
-    async fn update_max(&self, tag: u32) -> Result<Leaf> {
+    async fn update_max(&self, tag: i32) -> Result<Leaf> {
         let mut conn = self.pool.acquire().await?;
         sqlx::query("UPDATE leaf_alloc SET max_id = max_id + step WHERE tag = ?")
             .bind(tag)
@@ -36,7 +54,7 @@ impl LeafDao for PgLeafDao {
         self.get_leaf(tag).await
     }
 
-    async fn update_max_by_step(&self, tag: u32, step: u32) -> Result<Leaf> {
+    async fn update_max_by_step(&self, tag: i32, step: i32) -> Result<Leaf> {
         let mut conn = self.pool.acquire().await?;
         sqlx::query("UPDATE leaf_alloc SET max_id = max_id + ? WHERE tag = ?")
             .bind(step)
@@ -54,15 +72,6 @@ impl PgLeafDao {
         })
     }
 
-    async fn get_leaf(&self, tag: u32) -> Result<Leaf> {
-        let mut conn = self.pool.acquire().await?;
-        let leaf: Leaf = sqlx::query("SELECT tag, max_id, step FROM leaf_alloc WHERE tag = ?")
-            .bind(tag)
-            .fetch_one(&mut conn)
-            .await?;
-        Ok(leaf)
-    }
-
     pub async fn create_table(&self) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
         sqlx::query(
@@ -74,14 +83,6 @@ impl PgLeafDao {
         )
         .execute(&mut conn)
         .await?;
-        Ok(())
-    }
-    pub async fn insert_row(&self, tag: u32) -> Result<()> {
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query("INSERT INTO leaf_alloc (tag, max_id, step) VALUES (?, 1000, 1000)")
-            .bind(tag)
-            .execute(&mut conn)
-            .await?;
         Ok(())
     }
 }

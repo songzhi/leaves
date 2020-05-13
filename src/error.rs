@@ -1,25 +1,22 @@
-#[derive(Debug)]
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("tag not exist")]
     TagNotExist,
+    #[error("both segment not ready")]
     BothSegmentsNotReady,
+    #[error("service not ready")]
     ServiceNotReady,
+    #[error("serialization error")]
     SerializationError,
-    #[cfg(any(feature = "mysql", feature = "postgres"))]
-    SqlXError(sqlx::error::Error),
+    #[cfg(any(feature = "mysql", feature = "postgres", feature = "sqlite"))]
+    #[error("sqlx error")]
+    SqlX(#[from] sqlx::error::Error),
     #[cfg(feature = "redis")]
-    RedisError(darkredis::Error),
-}
-
-#[cfg(any(feature = "mysql", feature = "postgres"))]
-impl From<sqlx::error::Error> for Error {
-    fn from(err: sqlx::error::Error) -> Self {
-        Self::SqlXError(err)
-    }
-}
-
-#[cfg(feature = "redis")]
-impl From<darkredis::Error> for Error {
-    fn from(err: darkredis::Error) -> Self {
-        Self::RedisError(err)
-    }
+    #[error("redis error")]
+    Redis(#[from] darkredis::Error),
+    #[cfg(feature = "mongo")]
+    #[error("mongodb error")]
+    MongoDB(#[from] mongodb::error::Error),
 }
