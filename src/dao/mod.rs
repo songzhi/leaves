@@ -21,6 +21,9 @@ pub mod redis;
 #[cfg(feature = "mongo")]
 pub mod mongodb;
 
+#[cfg(test)]
+pub mod mock;
+
 #[async_trait]
 pub trait LeafDao {
     /// get all leaves

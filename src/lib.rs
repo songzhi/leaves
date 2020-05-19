@@ -11,8 +11,9 @@ compile_error!("only one of 'runtime-async-std' or 'runtime-tokio' features must
 pub mod dao;
 pub mod error;
 pub mod segment;
+mod utils;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, serde::Deserialize, serde::Serialize)]
 #[cfg_attr(
     any(feature = "mysql", feature = "postgres", feature = "sqlite"),
     derive(sqlx::FromRow)

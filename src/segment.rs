@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "runtime-async-std")]
-use async_std::{sync::RwLock, task::spawn};
+use async_std::sync::RwLock;
 use dashmap::DashMap;
 #[cfg(feature = "runtime-tokio")]
-use tokio::{sync::RwLock, task::spawn};
+use tokio::sync::RwLock;
 
 use crate::{Error, LeafDao, Result};
+
+use super::utils;
 
 type Cache = Arc<DashMap<i32, Arc<RwLock<SegmentBuffer>>>>;
 
@@ -59,10 +61,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     fn update_cache_every_minute(&self) {
         let cache = self.cache.clone();
         let dao = self.dao.clone();
-        spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+        utils::spawn(async move {
             loop {
-                interval.tick().await;
+                utils::sleep(Duration::from_secs(60)).await;
                 if Self::update_cache(cache.clone(), dao.clone())
                     .await
                     .is_err()
@@ -115,7 +116,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         {
             let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
-            spawn(async move {
+            utils::spawn(async move {
                 if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false)
                     .await
                     .is_ok()
@@ -190,10 +191,10 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 step
             };
             tracing::info!(
-                "Buffer[{}] step:{} duration:{:.2}mins next_step:{}",
+                "Buffer[{}] step:{} duration:{:.2}ms next_step:{}",
                 buffer.tag,
                 step,
-                duration.as_secs() as f64 / 60.0,
+                duration.as_millis(),
                 next_step
             );
             let leaf = dao.update_max_by_step(buffer.tag, next_step).await?;
@@ -223,17 +224,10 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         let mut roll = 0;
         let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
         let buffer = buffer.read().await;
-        let delay_duration = Duration::from_millis(10);
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
             if roll > 10_000 {
-                cfg_if::cfg_if! {
-                    if #[cfg(feature = "runtime-async-std")] {
-                        async_std::task::sleep(delay_duration).await;
-                    } else if #[cfg(feature = "runtime-tokio")] {
-                        tokio::time::delay_for(delay_duration).await;
-                    }
-                }
+                utils::sleep(Duration::from_millis(10)).await;
                 break;
             }
         }
@@ -334,5 +328,29 @@ impl SegmentBuffer {
     #[inline]
     pub fn switch(&mut self) {
         self.current_idx = self.next_idx();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Leaf;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_with_mock() {
+        let dao = Arc::new(crate::dao::mock::MockLeafDao::default());
+        let mut service = LeafSegment::new(dao.clone());
+        dao.insert(Leaf {
+            tag: 1,
+            max_id: 0,
+            step: 1000,
+        })
+        .await
+        .unwrap();
+        service.init().await.unwrap();
+        for _ in 0..10000 {
+            service.get(1).await.unwrap();
+        }
     }
 }
