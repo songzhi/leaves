@@ -5,10 +5,11 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    mongodb: Option<String>,
-    mysql: Option<String>,
-    postgresql: Option<String>,
-    sqlite: Option<String>,
+    pub mongodb: Option<String>,
+    pub mysql: Option<String>,
+    pub postgresql: Option<String>,
+    pub sqlite: Option<String>,
+    pub redis: Option<String>,
 }
 
 pub fn get_config(path: &str) -> Option<Config> {

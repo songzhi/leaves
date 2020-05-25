@@ -17,15 +17,22 @@ impl TryFrom<Value> for Leaf {
     type Error = Error;
 
     fn try_from(value: Value) -> Result<Self> {
+        fn redis_value_to_isize(v: Value) -> Option<isize> {
+            match v {
+                Value::String(s) => String::from_utf8(s).ok()?.parse::<isize>().ok(),
+                Value::Integer(i) => Some(i),
+                _ => None,
+            }
+        }
         let (tag, max_id, step) = value
             .optional_array()
             .and_then(|values| {
                 let mut values = values.into_iter();
                 let (tag, max_id, step) = (values.next()?, values.next()?, values.next()?);
                 Some((
-                    tag.optional_integer().map(|v| v as i32)?,
-                    max_id.optional_integer().map(|v| v as i64)?,
-                    step.optional_integer().map(|v| v as i32)?,
+                    redis_value_to_isize(tag)? as i32,
+                    redis_value_to_isize(max_id)? as i64,
+                    redis_value_to_isize(step)? as i32,
                 ))
             })
             .ok_or(Error::SerializationError)?;
@@ -78,20 +85,27 @@ impl LeafDao for RedisDao {
     async fn tags(&self) -> Result<Vec<i32>> {
         let mut conn = self.pool.get().await;
         let command = Command::new("KEYS").arg(b"leaf_alloc:*");
-        conn.run_command(command)
+        Ok(conn
+            .run_command(command)
             .await?
             .optional_array()
             .map(|tags| {
                 tags.into_iter()
-                    .map(|v| v.optional_integer().map(|v| v as i32))
+                    .map(|v| {
+                        v.optional_string()
+                            .and_then(|v| {
+                                String::from_utf8(v.rsplit(|i| i.eq(&b':')).next()?.into()).ok()
+                            })
+                            .and_then(|s| s.parse::<i32>().ok())
+                    })
                     .flatten()
                     .collect()
             })
-            .ok_or(Error::SerializationError)
+            .unwrap_or(vec![]))
     }
 
     async fn update_max(&self, tag: i32) -> Result<Leaf> {
-        let step = self.get_leaf(tag).await.map(|l| l.step).unwrap_or(1000);
+        let step = self.leaf(tag).await.map(|l| l.step).unwrap_or(1000);
         self.update_max_by_step(tag, step).await
     }
 
@@ -99,7 +113,7 @@ impl LeafDao for RedisDao {
         let mut conn = self.pool.get().await;
         conn.hincrby(format!("leaf_alloc:{}", tag), b"max_id", step as isize)
             .await?;
-        self.get_leaf(tag).await.ok_or(Error::TagNotExist)
+        self.leaf(tag).await
     }
 }
 
