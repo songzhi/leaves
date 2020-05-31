@@ -11,14 +11,16 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 - [ ] generate id in snowflake mode 
 - [x] mysql 
 - [x] redis
-- [x] postgres
+- [x] postgresql
+- [x] sqlite
+- [x] mongodb
 - [x] runtime-agnostic(tokio or async-std) when using mysql or postgres
 - [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
 * more configurable
 * performance
-* MongoDB
+* lazy fetch
 
 ## Example
 Enabling the `mysql` and `runtime-tokio` feature:
@@ -40,5 +42,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-Not yet.But in my PC and local database,I used 10 tasks and each one loop 1000 times.
-It costs 400ms.
+200,000qps using a in-memory mock db (not strict benchmark)

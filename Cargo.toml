@@ -1,6 +1,6 @@
 [package]
 name = "leaves"
-version = "0.4.0"
+version = "0.4.0-beta.1"
 authors = ["lsongzhi <lsongzhi@163.com>"]
 edition = "2018"
 repository = "https://github.com/songzhi/leaves"
