@@ -25,7 +25,7 @@ runtime-async-std = ["async-std", "sqlx/runtime-async-std", "darkredis/runtime_a
 
 [dependencies]
 async-trait = "0.1"
-dashmap = "3.11"
+dashmap = "4.0.0-rc6"
 num_cpus = "1.12"
 cfg-if = "0.1"
 thiserror = "1.0"
