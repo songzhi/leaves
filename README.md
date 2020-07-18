@@ -42,4 +42,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-200,000qps using a in-memory mock db (not strict benchmark)
+1,000,000 id in 193ms(mocked database in memory)

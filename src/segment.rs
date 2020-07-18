@@ -1,20 +1,17 @@
 use std::cmp::min;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, SystemTime};
 
-#[cfg(feature = "runtime-async-std")]
-use async_std::sync::RwLock;
+use async_mutex::Mutex;
 use dashmap::DashMap;
-#[cfg(feature = "runtime-tokio")]
-use tokio::sync::RwLock;
 
 use crate::{Error, LeafDao, Result};
 
 use super::utils;
 
-type Cache = Arc<DashMap<i32, Arc<RwLock<SegmentBuffer>>>>;
+type Cache = Arc<DashMap<i32, Arc<Mutex<SegmentBuffer>>>>;
 
 pub struct LeafSegment<D> {
     dao: Arc<D>,
@@ -50,8 +47,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             .cache
             .get(&tag)
             .ok_or_else(|| Error::TagNotExist)?
+            .value()
             .clone();
-        if !buffer.read().await.init_ok {
+        if !buffer.lock().await.init_ok {
             tracing::info!("Init Buffer[{}]", tag);
             Self::update_segment_from_db(self.dao.clone(), buffer, false, true).await?;
         }
@@ -91,7 +89,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             .collect::<Vec<_>>();
         for t in insert_tags {
             tracing::info!("Add tag[{}] to cache", t);
-            cache.insert(t, Arc::new(RwLock::new(SegmentBuffer::new(t))));
+            cache.insert(t, Arc::new(Mutex::new(SegmentBuffer::new(t))));
         }
         for t in remove_tags {
             tracing::info!("Remove tag[{}] from cache", t);
@@ -105,8 +103,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             .cache
             .get(&tag)
             .ok_or_else(|| Error::TagNotExist)?
+            .value()
             .clone();
-        let buffer = buffer_wrapped.read().await;
+        let buffer = buffer_wrapped.lock().await;
         let segment = buffer.current();
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
@@ -122,10 +121,10 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                     .is_ok()
                 {
                     tracing::info!("Update Buffer[{}]'s next segment from DB", tag);
-                    let mut buffer = buffer_wrapped.write().await;
+                    let mut buffer = buffer_wrapped.lock().await;
                     buffer.next_ready = true;
                 }
-                let buffer = buffer_wrapped.read().await;
+                let buffer = buffer_wrapped.lock().await;
                 buffer.thread_running.store(false, Ordering::Relaxed);
             });
         }
@@ -135,7 +134,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         } else {
             drop(buffer); // to prevent deadlock
             self.wait_and_sleep(tag).await?;
-            let mut buffer = buffer_wrapped.write().await;
+            let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
             let val = segment.val.fetch_add(1, Ordering::Relaxed);
             if val < segment.max {
@@ -153,11 +152,11 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
 
     pub async fn update_segment_from_db(
         dao: Arc<D>,
-        buffer: Arc<RwLock<SegmentBuffer>>,
+        buffer: Arc<Mutex<SegmentBuffer>>,
         is_next: bool,
         is_init: bool,
     ) -> Result<()> {
-        let mut buffer = buffer.write().await;
+        let mut buffer = buffer.lock().await;
         if is_init && buffer.init_ok {
             return Ok(());
         }
@@ -223,7 +222,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     async fn wait_and_sleep(&self, tag: i32) -> Result<()> {
         let mut roll = 0;
         let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
-        let buffer = buffer.read().await;
+        let buffer = buffer.lock().await;
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
             if roll > 10_000 {
@@ -328,29 +327,5 @@ impl SegmentBuffer {
     #[inline]
     pub fn switch(&mut self) {
         self.current_idx = self.next_idx();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Leaf;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_with_mock() {
-        let dao = Arc::new(crate::dao::mock::MockLeafDao::default());
-        let mut service = LeafSegment::new(dao.clone());
-        dao.insert(Leaf {
-            tag: 1,
-            max_id: 0,
-            step: 1000,
-        })
-        .await
-        .unwrap();
-        service.init().await.unwrap();
-        for _ in 0..10000 {
-            service.get(1).await.unwrap();
-        }
     }
 }
