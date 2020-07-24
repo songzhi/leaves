@@ -1,8 +1,7 @@
-use std::cmp::min;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_mutex::Mutex;
 use dashmap::DashMap;
@@ -132,7 +131,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         if val < segment.max {
             Ok(val)
         } else {
-            drop(buffer); // to prevent deadlock
+            drop(buffer); // prevent deadlock
             self.wait_and_sleep(tag).await?;
             let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
@@ -165,22 +164,10 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             buffer.step = leaf.step;
             buffer.min_step = leaf.step;
             buffer.init_ok = true;
-            leaf
-        } else if buffer.update_timestamp == 0 {
-            let leaf = dao.update_max(buffer.tag).await?;
-            buffer.update_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-            buffer.step = leaf.step;
-            buffer.min_step = leaf.step;
+            buffer.updated_at = Instant::now();
             leaf
         } else {
-            let duration = SystemTime::now()
-                .duration_since(
-                    SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as u64),
-                )
-                .unwrap();
+            let duration = buffer.updated_at.elapsed();
             let step = buffer.step;
             let next_step = if duration < Self::SEGMENT_DURATION && step * 2 <= Self::MAX_STEP {
                 step * 2
@@ -197,10 +184,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 next_step
             );
             let leaf = dao.update_max_by_step(buffer.tag, next_step).await?;
-            buffer.update_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
+            buffer.updated_at = Instant::now();
             buffer.step = next_step;
             buffer.min_step = leaf.step;
             leaf
@@ -252,6 +236,7 @@ impl fmt::Display for Segment {
 }
 
 impl Segment {
+    #[inline]
     pub fn new(val: i64, max: i64, step: i32) -> Self {
         Self {
             val: val.into(),
@@ -261,7 +246,7 @@ impl Segment {
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max - min(self.max, self.val.load(Ordering::Relaxed)) // to prevent overflow
+        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
     }
 }
 
@@ -270,7 +255,7 @@ pub struct SegmentBuffer {
     pub init_ok: bool,
     pub next_ready: bool,
     pub(crate) thread_running: AtomicBool,
-    pub(crate) update_timestamp: u128,
+    pub(crate) updated_at: Instant,
     pub(crate) step: i32,
     pub(crate) min_step: i32,
     pub tag: i32,
@@ -285,7 +270,7 @@ impl SegmentBuffer {
             init_ok: false,
             next_ready: false,
             thread_running: false.into(),
-            update_timestamp: 0,
+            updated_at: Instant::now(),
             step: 0,
             min_step: 0,
             tag,
