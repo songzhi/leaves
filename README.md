@@ -42,4 +42,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-1,000,000 id in 193ms(mocked database in memory)
+1,000,000 id in 146ms(mocked database in memory with R7 3700X)
