@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use mongodb::{options::ClientOptions, Client};
+use mongodb::{Client, options::ClientOptions};
 
 use leaves::{Leaf, LeafDao, LeafSegment};
 
-include!("./utils.rs");
-
 #[tokio::test]
 async fn test_with_mongodb() {
-    let url = get_config("tests/config.toml").unwrap().mongodb.unwrap();
+    dotenv::dotenv().ok();
+    let url = std::env::var("MONGODB_URL").expect("MONGODB_URL");
     let client_options = ClientOptions::parse(url.as_str()).await.unwrap();
     let client = Client::with_options(client_options).unwrap();
     let collection = client.database("test_leaves").collection("leaves");

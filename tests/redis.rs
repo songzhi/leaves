@@ -2,13 +2,10 @@ use std::sync::Arc;
 
 use leaves::{Leaf, LeafDao, LeafSegment};
 
-include!("./utils.rs");
-
 #[tokio::test]
 async fn test_with_redis() {
-    let config = get_config("tests/config.toml").unwrap().redis.unwrap();
-    let mut config = config.split(' ');
-
+    dotenv::dotenv().ok();
+    let mut config = std::env::var("REDIS_URL").expect("REDIS_URL").split(' ');
     let (address, password) = (config.next().unwrap(), config.next());
     let dao = Arc::new(
         leaves::dao::redis::RedisDao::new(address, password)
