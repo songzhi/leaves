@@ -16,25 +16,26 @@ pub struct LeafSegment<D> {
     dao: Arc<D>,
     init_ok: bool,
     pub cache: Cache,
+    config: Config,
 }
 
 impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
-    const MAX_STEP: i32 = 1_000_000;
-    const SEGMENT_DURATION: Duration = Duration::from_secs(15 * 60);
-
-    pub fn new(dao: Arc<D>) -> Self {
+    pub fn new(dao: Arc<D>, config: Config) -> Self {
         Self {
             dao,
             init_ok: false,
             cache: Arc::new(DashMap::new()),
+            config,
         }
     }
 
     pub async fn init(&mut self) -> Result<()> {
         tracing::info!("Init ...");
-        Self::update_cache(self.cache.clone(), self.dao.clone()).await?;
+        if !self.config.is_lazy {
+            Self::update_cache_with_db(self.cache.clone(), self.dao.clone()).await?;
+        }
         self.init_ok = true;
-        self.update_cache_every_minute();
+        self.update_cache_periodically();
         Ok(())
     }
 
@@ -42,37 +43,58 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         if !self.init_ok {
             return Err(Error::ServiceNotReady);
         }
-        let buffer = self
-            .cache
-            .get(&tag)
-            .ok_or_else(|| Error::TagNotExist)?
-            .value()
-            .clone();
+        let buffer = self.get_segment_buffer(tag).await?;
         if !buffer.lock().await.init_ok {
             tracing::info!("Init Buffer[{}]", tag);
-            Self::update_segment_from_db(self.dao.clone(), buffer, false, true).await?;
+            Self::update_segment_from_db(self.dao.clone(), buffer, false, true, self.config)
+                .await?;
         }
         self.get_id_from_segment_buffer(tag).await
     }
 
-    fn update_cache_every_minute(&self) {
+    async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
+        if let Some(entry) = self.cache.get(&tag) {
+            Ok(entry.value().clone())
+        } else if self.config.is_lazy {
+            self.dao.leaf(tag).await?;
+            if let Some(entry) = self.cache.get(&tag) {
+                Ok(entry.value().clone())
+            } else {
+                let buffer = Arc::new(Mutex::new(SegmentBuffer::new(tag)));
+                self.cache.insert(tag, buffer.clone());
+                Ok(buffer)
+            }
+        } else {
+            Err(Error::TagNotExist)
+        }
+    }
+
+    fn update_cache_periodically(&self) {
         let cache = self.cache.clone();
         let dao = self.dao.clone();
+        let interval = self.config.update_cache_interval;
+        let is_lazy = self.config.is_lazy;
         utils::spawn(async move {
             loop {
-                utils::sleep(Duration::from_secs(60)).await;
-                if Self::update_cache(cache.clone(), dao.clone())
-                    .await
-                    .is_err()
-                {
-                    tracing::error!("Update cache failed");
+                utils::sleep(interval).await;
+                let result = if is_lazy {
+                    Self::clean_cache(cache.clone()).await
+                } else {
+                    Self::update_cache_with_db(cache.clone(), dao.clone()).await
+                };
+                if let Err(err) = result {
+                    tracing::error!("Update cache failed: {}", err);
                 }
             }
         });
     }
 
-    async fn update_cache(cache: Cache, dao: Arc<D>) -> Result<()> {
-        tracing::info!("Update cache");
+    async fn clean_cache(cache: Cache) -> Result<()> {
+        todo!()
+    }
+
+    async fn update_cache_with_db(cache: Cache, dao: Arc<D>) -> Result<()> {
+        tracing::info!("Update cache with database");
         let db_tags = dao.tags().await?;
         if db_tags.is_empty() {
             return Ok(());
@@ -97,13 +119,8 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-    pub async fn get_id_from_segment_buffer(&self, tag: i32) -> Result<i64> {
-        let buffer_wrapped = self
-            .cache
-            .get(&tag)
-            .ok_or_else(|| Error::TagNotExist)?
-            .value()
-            .clone();
+    async fn get_id_from_segment_buffer(&self, tag: i32) -> Result<i64> {
+        let buffer_wrapped = self.get_segment_buffer(tag).await?;
         let buffer = buffer_wrapped.lock().await;
         let segment = buffer.current();
         if !buffer.next_ready
@@ -114,8 +131,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         {
             let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
+            let config = self.config;
             utils::spawn(async move {
-                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false)
+                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false, config)
                     .await
                     .is_ok()
                 {
@@ -149,11 +167,12 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         }
     }
 
-    pub async fn update_segment_from_db(
+    async fn update_segment_from_db(
         dao: Arc<D>,
         buffer: Arc<Mutex<SegmentBuffer>>,
         is_next: bool,
         is_init: bool,
+        config: Config,
     ) -> Result<()> {
         let mut buffer = buffer.lock().await;
         if is_init && buffer.init_ok {
@@ -169,9 +188,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         } else {
             let duration = buffer.updated_at.elapsed();
             let step = buffer.step;
-            let next_step = if duration < Self::SEGMENT_DURATION && step * 2 <= Self::MAX_STEP {
+            let next_step = if duration < config.segment_duration && step * 2 <= config.max_step {
                 step * 2
-            } else if duration >= Self::SEGMENT_DURATION * 2 && step / 2 >= buffer.min_step {
+            } else if duration >= config.segment_duration * 2 && step / 2 >= buffer.min_step {
                 step / 2
             } else {
                 step
@@ -205,7 +224,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
 
     async fn wait_and_sleep(&self, tag: i32) -> Result<()> {
         let mut roll = 0;
-        let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
+        let buffer = self.get_segment_buffer(tag).await?;
         let buffer = buffer.lock().await;
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
@@ -312,5 +331,61 @@ impl SegmentBuffer {
     #[inline]
     pub fn switch(&mut self) {
         self.current_idx = self.next_idx();
+    }
+}
+
+/// Config of [`LeafSegment`]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Config {
+    /// * default(`false`): load all tags from database at startup,
+    /// and update with database every `update_cache_interval`.
+    ///
+    /// * lazy(`true`): load tags on demand, and clean cache every `update_cache_interval`.
+    pub is_lazy: bool,
+    /// upper bound of step, default is 1_000_000.
+    pub max_step: i32,
+    /// related to generate next step, default is 15min.
+    pub segment_duration: Duration,
+    /// behavior depends on `is_lazy`, default is 1min.
+    pub update_cache_interval: Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            is_lazy: false,
+            max_step: 1_000_000,
+            segment_duration: Duration::from_secs(15 * 60),
+            update_cache_interval: Duration::from_secs(60),
+        }
+    }
+}
+
+impl Config {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    #[inline]
+    pub fn lazy() -> Self {
+        Self {
+            is_lazy: true,
+            ..Self::default()
+        }
+    }
+    #[inline]
+    pub fn set_max_step(mut self, step: i32) -> Self {
+        self.max_step = step;
+        self
+    }
+    #[inline]
+    pub fn set_segment_duration(mut self, duration: Duration) -> Self {
+        self.segment_duration = duration;
+        self
+    }
+    #[inline]
+    pub fn set_update_cache_interval(mut self, interval: Duration) -> Self {
+        self.update_cache_interval = interval;
+        self
     }
 }
