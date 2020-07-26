@@ -39,6 +39,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         Ok(())
     }
 
+    /// Get an ID
     pub async fn get(&self, tag: i32) -> Result<i64> {
         if !self.init_ok {
             return Err(Error::ServiceNotReady);
@@ -56,6 +57,17 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             .await?;
         }
         Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await
+    }
+
+    /// Update from database
+    pub async fn update(&self, tag: i32) -> Result<()> {
+        let buffer = self.get_segment_buffer(tag).await?;
+        Self::update_segment_from_db(self.dao.clone(), buffer, false, false, self.config).await
+    }
+
+    /// Remove from cache, useful in lazy mode.
+    pub async fn remove(&self, tag: i32) -> bool {
+        self.cache.remove(&tag)
     }
 
     async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
@@ -76,27 +88,20 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     }
 
     fn update_cache_periodically(&self) {
+        if self.config.is_lazy {
+            return;
+        }
         let cache = self.cache.clone();
         let dao = self.dao.clone();
         let interval = self.config.update_cache_interval;
-        let is_lazy = self.config.is_lazy;
         utils::spawn(async move {
             loop {
                 utils::sleep(interval).await;
-                let result = if is_lazy {
-                    Self::clean_cache(cache.clone()).await
-                } else {
-                    Self::update_cache_from_db(cache.clone(), dao.clone()).await
-                };
-                if let Err(err) = result {
+                if let Err(err) = Self::update_cache_from_db(cache.clone(), dao.clone()).await {
                     tracing::error!("Update cache failed: {}", err);
                 }
             }
         });
-    }
-
-    async fn clean_cache(cache: Cache) -> Result<()> {
-        todo!()
     }
 
     async fn update_cache_from_db(cache: Cache, dao: Arc<D>) -> Result<()> {
@@ -347,13 +352,13 @@ pub struct Config {
     /// * default(`false`): load all tags from database at startup,
     /// and update with database every `update_cache_interval`.
     ///
-    /// * lazy(`true`): load tags on demand, and clean cache every `update_cache_interval`.
+    /// * lazy(`true`): load tags on demand, and needs remove them manually.
     pub is_lazy: bool,
     /// upper bound of step, default is 1_000_000.
     pub max_step: i32,
     /// related to generate next step, default is 15min.
     pub segment_duration: Duration,
-    /// behavior depends on `is_lazy`, default is 1min.
+    /// default is 1min.
     pub update_cache_interval: Duration,
 }
 

@@ -18,21 +18,19 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 - [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
-* more configurable
 * performance
-* lazy fetch
+* correctness
 
 ## Example
 Enabling the `mysql` and `runtime-tokio` feature:
 ```rust
-use leaves::dao::mysql::MySqlLeafDao;
-use leaves::SegmentIDGen;
-use leaves::Result;
+use leaves::dao::MySqlLeafDao;
+use leaves::{SegmentIDGen, Config, Result};
 
 #[tokio::main]
 async main() -> Result<()> {
     let dao = Arc::new(MySqlLeafDao::new("mysql://...").await?);
-    let mut service = SegmentIDGen::new(dao);
+    let mut service = SegmentIDGen::new(dao, Config::new());
     service.init().await?;
     let tag = 1;
     for _ in 0..1000 {
@@ -42,4 +40,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-1,000,000 id in 146ms(mocked database in memory with R7 3700X)
+1,000,000 id in 150ms(mocked database in memory with R7 3700X)
