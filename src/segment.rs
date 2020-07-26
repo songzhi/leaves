@@ -12,14 +12,14 @@ use super::utils;
 
 type Cache = Arc<DashMap<i32, Arc<Mutex<SegmentBuffer>>>>;
 
-pub struct LeafSegment<D> {
+pub struct SegmentIDGen<D> {
     dao: Arc<D>,
     init_ok: bool,
-    pub cache: Cache,
+    cache: Cache,
     config: Config,
 }
 
-impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
+impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     pub fn new(dao: Arc<D>, config: Config) -> Self {
         Self {
             dao,
@@ -32,7 +32,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
     pub async fn init(&mut self) -> Result<()> {
         tracing::info!("Init ...");
         if !self.config.is_lazy {
-            Self::update_cache_with_db(self.cache.clone(), self.dao.clone()).await?;
+            Self::update_cache_from_db(self.cache.clone(), self.dao.clone()).await?;
         }
         self.init_ok = true;
         self.update_cache_periodically();
@@ -46,10 +46,16 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         let buffer = self.get_segment_buffer(tag).await?;
         if !buffer.lock().await.init_ok {
             tracing::info!("Init Buffer[{}]", tag);
-            Self::update_segment_from_db(self.dao.clone(), buffer, false, true, self.config)
-                .await?;
+            Self::update_segment_from_db(
+                self.dao.clone(),
+                buffer.clone(),
+                false,
+                true,
+                self.config,
+            )
+            .await?;
         }
-        self.get_id_from_segment_buffer(tag).await
+        Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await
     }
 
     async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
@@ -80,7 +86,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 let result = if is_lazy {
                     Self::clean_cache(cache.clone()).await
                 } else {
-                    Self::update_cache_with_db(cache.clone(), dao.clone()).await
+                    Self::update_cache_from_db(cache.clone(), dao.clone()).await
                 };
                 if let Err(err) = result {
                     tracing::error!("Update cache failed: {}", err);
@@ -93,7 +99,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         todo!()
     }
 
-    async fn update_cache_with_db(cache: Cache, dao: Arc<D>) -> Result<()> {
+    async fn update_cache_from_db(cache: Cache, dao: Arc<D>) -> Result<()> {
         tracing::info!("Update cache with database");
         let db_tags = dao.tags().await?;
         if db_tags.is_empty() {
@@ -119,9 +125,13 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-    async fn get_id_from_segment_buffer(&self, tag: i32) -> Result<i64> {
-        let buffer_wrapped = self.get_segment_buffer(tag).await?;
+    async fn get_id_from_segment_buffer(
+        dao: Arc<D>,
+        config: Config,
+        buffer_wrapped: Arc<Mutex<SegmentBuffer>>,
+    ) -> Result<i64> {
         let buffer = buffer_wrapped.lock().await;
+        let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
@@ -129,9 +139,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 .thread_running
                 .compare_and_swap(false, true, Ordering::Relaxed)
         {
-            let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
-            let config = self.config;
             utils::spawn(async move {
                 if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false, config)
                     .await
@@ -150,7 +158,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             Ok(val)
         } else {
             drop(buffer); // prevent deadlock
-            self.wait_and_sleep(tag).await?;
+            Self::wait_and_sleep(buffer_wrapped.clone()).await?;
             let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
             let val = segment.val.fetch_add(1, Ordering::Relaxed);
@@ -222,9 +230,8 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-    async fn wait_and_sleep(&self, tag: i32) -> Result<()> {
+    async fn wait_and_sleep(buffer: Arc<Mutex<SegmentBuffer>>) -> Result<()> {
         let mut roll = 0;
-        let buffer = self.get_segment_buffer(tag).await?;
         let buffer = buffer.lock().await;
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
@@ -334,7 +341,7 @@ impl SegmentBuffer {
     }
 }
 
-/// Config of [`LeafSegment`]
+/// Config of [`SegmentIDGen`]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Config {
     /// * default(`false`): load all tags from database at startup,

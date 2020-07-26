@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use leaves::{Leaf, LeafDao, LeafSegment};
+use leaves::{Leaf, LeafDao, SegmentIDGen};
 
 #[tokio::test]
 async fn test_with_redis() {
@@ -12,7 +12,7 @@ async fn test_with_redis() {
             .await
             .unwrap(),
     );
-    let mut service = LeafSegment::new(dao.clone());
+    let mut service = SegmentIDGen::new(dao.clone());
     service.init().await.unwrap();
     // dao.insert(Leaf {
     //     tag: 1,

@@ -26,13 +26,13 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 Enabling the `mysql` and `runtime-tokio` feature:
 ```rust
 use leaves::dao::mysql::MySqlLeafDao;
-use leaves::LeafSegment;
+use leaves::SegmentIDGen;
 use leaves::Result;
 
 #[tokio::main]
 async main() -> Result<()> {
     let dao = Arc::new(MySqlLeafDao::new("mysql://...").await?);
-    let mut service = LeafSegment::new(dao);
+    let mut service = SegmentIDGen::new(dao);
     service.init().await?;
     let tag = 1;
     for _ in 0..1000 {
