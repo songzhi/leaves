@@ -1,6 +1,6 @@
 [package]
 name = "leaves"
-version = "0.4.0-beta.1"
+version = "0.5.0"
 authors = ["lsongzhi <lsongzhi@163.com>"]
 edition = "2018"
 repository = "https://github.com/songzhi/leaves"
@@ -30,8 +30,10 @@ num_cpus = "1.13"
 cfg-if = "0.1"
 thiserror = "1.0"
 tracing = "0.1"
-futures-util = "0.3"
-futures = "=0.3.5"
+serde = { version="1.0", features=["derive"] }
+async-mutex = "1.1"
+futures-util = "0.3.5"
+
 tokio = { version="0.2", features=["time", "rt-threaded"], optional=true }
 async-std = { version = "1.6", optional=true  }
 
@@ -39,11 +41,11 @@ darkredis = { version="0.7", default-features = false, optional=true }
 sqlx = { version="0.3", default-features = false, features=["macros"] , optional=true }
 mongodb = { version="0.10", default-features = false, optional=true }
 bson = { version="0.14", optional=true }
-serde = { version="1.0", features=["derive"] }
-async-mutex = "1.1"
 
-[dev-dependencies]
-dotenv = "0.15"
+
+[package.metadata.docs.rs]
+features = ["mysql", "postgres", "sqlite", "redis", "mongo"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "redis"

@@ -1,6 +1,6 @@
 pub use dao::LeafDao;
 pub use error::{Error, Result};
-pub use segment::LeafSegment;
+pub use segment::SegmentIDGen;
 
 #[cfg(not(any(feature = "runtime-tokio", feature = "runtime-async-std")))]
 compile_error!("one of 'runtime-async-std' or 'runtime-tokio' features must be enabled");

@@ -1,8 +1,7 @@
-use std::cmp::min;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_mutex::Mutex;
 use dashmap::DashMap;
@@ -13,67 +12,100 @@ use super::utils;
 
 type Cache = Arc<DashMap<i32, Arc<Mutex<SegmentBuffer>>>>;
 
-pub struct LeafSegment<D> {
+pub struct SegmentIDGen<D> {
     dao: Arc<D>,
     init_ok: bool,
-    pub cache: Cache,
+    cache: Cache,
+    config: Config,
 }
 
-impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
-    const MAX_STEP: i32 = 1_000_000;
-    const SEGMENT_DURATION: Duration = Duration::from_secs(15 * 60);
-
-    pub fn new(dao: Arc<D>) -> Self {
+impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
+    pub fn new(dao: Arc<D>, config: Config) -> Self {
         Self {
             dao,
             init_ok: false,
             cache: Arc::new(DashMap::new()),
+            config,
         }
     }
 
     pub async fn init(&mut self) -> Result<()> {
         tracing::info!("Init ...");
-        Self::update_cache(self.cache.clone(), self.dao.clone()).await?;
+        if !self.config.is_lazy {
+            Self::update_cache_from_db(self.cache.clone(), self.dao.clone()).await?;
+        }
         self.init_ok = true;
-        self.update_cache_every_minute();
+        self.update_cache_periodically();
         Ok(())
     }
 
+    /// Get an ID
     pub async fn get(&self, tag: i32) -> Result<i64> {
         if !self.init_ok {
             return Err(Error::ServiceNotReady);
         }
-        let buffer = self
-            .cache
-            .get(&tag)
-            .ok_or_else(|| Error::TagNotExist)?
-            .value()
-            .clone();
+        let buffer = self.get_segment_buffer(tag).await?;
         if !buffer.lock().await.init_ok {
             tracing::info!("Init Buffer[{}]", tag);
-            Self::update_segment_from_db(self.dao.clone(), buffer, false, true).await?;
+            Self::update_segment_from_db(
+                self.dao.clone(),
+                buffer.clone(),
+                false,
+                true,
+                self.config,
+            )
+            .await?;
         }
-        self.get_id_from_segment_buffer(tag).await
+        Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await
     }
 
-    fn update_cache_every_minute(&self) {
+    /// Update from database
+    pub async fn update(&self, tag: i32) -> Result<()> {
+        let buffer = self.get_segment_buffer(tag).await?;
+        Self::update_segment_from_db(self.dao.clone(), buffer, false, false, self.config).await
+    }
+
+    /// Remove from cache, useful in lazy mode.
+    pub async fn remove(&self, tag: i32) -> bool {
+        self.cache.remove(&tag)
+    }
+
+    async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
+        if let Some(entry) = self.cache.get(&tag) {
+            Ok(entry.value().clone())
+        } else if self.config.is_lazy {
+            self.dao.leaf(tag).await?;
+            if let Some(entry) = self.cache.get(&tag) {
+                Ok(entry.value().clone())
+            } else {
+                let buffer = Arc::new(Mutex::new(SegmentBuffer::new(tag)));
+                self.cache.insert(tag, buffer.clone());
+                Ok(buffer)
+            }
+        } else {
+            Err(Error::TagNotExist)
+        }
+    }
+
+    fn update_cache_periodically(&self) {
+        if self.config.is_lazy {
+            return;
+        }
         let cache = self.cache.clone();
         let dao = self.dao.clone();
+        let interval = self.config.update_cache_interval;
         utils::spawn(async move {
             loop {
-                utils::sleep(Duration::from_secs(60)).await;
-                if Self::update_cache(cache.clone(), dao.clone())
-                    .await
-                    .is_err()
-                {
-                    tracing::error!("Update cache failed");
+                utils::sleep(interval).await;
+                if let Err(err) = Self::update_cache_from_db(cache.clone(), dao.clone()).await {
+                    tracing::error!("Update cache failed: {}", err);
                 }
             }
         });
     }
 
-    async fn update_cache(cache: Cache, dao: Arc<D>) -> Result<()> {
-        tracing::info!("Update cache");
+    async fn update_cache_from_db(cache: Cache, dao: Arc<D>) -> Result<()> {
+        tracing::info!("Update cache with database");
         let db_tags = dao.tags().await?;
         if db_tags.is_empty() {
             return Ok(());
@@ -98,14 +130,13 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-    pub async fn get_id_from_segment_buffer(&self, tag: i32) -> Result<i64> {
-        let buffer_wrapped = self
-            .cache
-            .get(&tag)
-            .ok_or_else(|| Error::TagNotExist)?
-            .value()
-            .clone();
+    async fn get_id_from_segment_buffer(
+        dao: Arc<D>,
+        config: Config,
+        buffer_wrapped: Arc<Mutex<SegmentBuffer>>,
+    ) -> Result<i64> {
         let buffer = buffer_wrapped.lock().await;
+        let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
@@ -113,10 +144,9 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 .thread_running
                 .compare_and_swap(false, true, Ordering::Relaxed)
         {
-            let dao = self.dao.clone();
             let buffer_wrapped = buffer_wrapped.clone();
             utils::spawn(async move {
-                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false)
+                if Self::update_segment_from_db(dao, buffer_wrapped.clone(), true, false, config)
                     .await
                     .is_ok()
                 {
@@ -132,8 +162,8 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         if val < segment.max {
             Ok(val)
         } else {
-            drop(buffer); // to prevent deadlock
-            self.wait_and_sleep(tag).await?;
+            drop(buffer); // prevent deadlock
+            Self::wait_and_sleep(buffer_wrapped.clone()).await?;
             let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
             let val = segment.val.fetch_add(1, Ordering::Relaxed);
@@ -150,11 +180,12 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         }
     }
 
-    pub async fn update_segment_from_db(
+    async fn update_segment_from_db(
         dao: Arc<D>,
         buffer: Arc<Mutex<SegmentBuffer>>,
         is_next: bool,
         is_init: bool,
+        config: Config,
     ) -> Result<()> {
         let mut buffer = buffer.lock().await;
         if is_init && buffer.init_ok {
@@ -165,26 +196,14 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
             buffer.step = leaf.step;
             buffer.min_step = leaf.step;
             buffer.init_ok = true;
-            leaf
-        } else if buffer.update_timestamp == 0 {
-            let leaf = dao.update_max(buffer.tag).await?;
-            buffer.update_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-            buffer.step = leaf.step;
-            buffer.min_step = leaf.step;
+            buffer.updated_at = Instant::now();
             leaf
         } else {
-            let duration = SystemTime::now()
-                .duration_since(
-                    SystemTime::UNIX_EPOCH + Duration::from_millis(buffer.update_timestamp as u64),
-                )
-                .unwrap();
+            let duration = buffer.updated_at.elapsed();
             let step = buffer.step;
-            let next_step = if duration < Self::SEGMENT_DURATION && step * 2 <= Self::MAX_STEP {
+            let next_step = if duration < config.segment_duration && step * 2 <= config.max_step {
                 step * 2
-            } else if duration >= Self::SEGMENT_DURATION * 2 && step / 2 >= buffer.min_step {
+            } else if duration >= config.segment_duration * 2 && step / 2 >= buffer.min_step {
                 step / 2
             } else {
                 step
@@ -197,10 +216,7 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
                 next_step
             );
             let leaf = dao.update_max_by_step(buffer.tag, next_step).await?;
-            buffer.update_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
+            buffer.updated_at = Instant::now();
             buffer.step = next_step;
             buffer.min_step = leaf.step;
             leaf
@@ -219,9 +235,8 @@ impl<D: 'static + LeafDao + Send + Sync> LeafSegment<D> {
         Ok(())
     }
 
-    async fn wait_and_sleep(&self, tag: i32) -> Result<()> {
+    async fn wait_and_sleep(buffer: Arc<Mutex<SegmentBuffer>>) -> Result<()> {
         let mut roll = 0;
-        let buffer = self.cache.get(&tag).ok_or(Error::TagNotExist)?.clone();
         let buffer = buffer.lock().await;
         while buffer.thread_running.load(Ordering::Relaxed) {
             roll += 1;
@@ -252,6 +267,7 @@ impl fmt::Display for Segment {
 }
 
 impl Segment {
+    #[inline]
     pub fn new(val: i64, max: i64, step: i32) -> Self {
         Self {
             val: val.into(),
@@ -261,7 +277,7 @@ impl Segment {
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max - min(self.max, self.val.load(Ordering::Relaxed)) // to prevent overflow
+        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
     }
 }
 
@@ -270,7 +286,7 @@ pub struct SegmentBuffer {
     pub init_ok: bool,
     pub next_ready: bool,
     pub(crate) thread_running: AtomicBool,
-    pub(crate) update_timestamp: u128,
+    pub(crate) updated_at: Instant,
     pub(crate) step: i32,
     pub(crate) min_step: i32,
     pub tag: i32,
@@ -285,7 +301,7 @@ impl SegmentBuffer {
             init_ok: false,
             next_ready: false,
             thread_running: false.into(),
-            update_timestamp: 0,
+            updated_at: Instant::now(),
             step: 0,
             min_step: 0,
             tag,
@@ -327,5 +343,61 @@ impl SegmentBuffer {
     #[inline]
     pub fn switch(&mut self) {
         self.current_idx = self.next_idx();
+    }
+}
+
+/// Config of [`SegmentIDGen`]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Config {
+    /// * default(`false`): load all tags from database at startup,
+    /// and update with database every `update_cache_interval`.
+    ///
+    /// * lazy(`true`): load tags on demand, and needs remove them manually.
+    pub is_lazy: bool,
+    /// upper bound of step, default is 1_000_000.
+    pub max_step: i32,
+    /// related to generate next step, default is 15min.
+    pub segment_duration: Duration,
+    /// default is 1min.
+    pub update_cache_interval: Duration,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            is_lazy: false,
+            max_step: 1_000_000,
+            segment_duration: Duration::from_secs(15 * 60),
+            update_cache_interval: Duration::from_secs(60),
+        }
+    }
+}
+
+impl Config {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    #[inline]
+    pub fn lazy() -> Self {
+        Self {
+            is_lazy: true,
+            ..Self::default()
+        }
+    }
+    #[inline]
+    pub fn set_max_step(mut self, step: i32) -> Self {
+        self.max_step = step;
+        self
+    }
+    #[inline]
+    pub fn set_segment_duration(mut self, duration: Duration) -> Self {
+        self.segment_duration = duration;
+        self
+    }
+    #[inline]
+    pub fn set_update_cache_interval(mut self, interval: Duration) -> Self {
+        self.update_cache_interval = interval;
+        self
     }
 }

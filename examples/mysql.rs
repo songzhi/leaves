@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use leaves::dao::mysql::MySqlLeafDao;
-use leaves::LeafSegment;
+use leaves::SegmentIDGen;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    dao.create_table().await.unwrap();
     //    dao.insert_row(1).await.unwrap();
 
-    let mut service = LeafSegment::new(dao);
+    let mut service = SegmentIDGen::new(dao);
     service.init().await.unwrap();
     let service = Arc::new(service);
     let mut listener = TcpListener::bind("127.0.0.1:8080").await?;

@@ -1,27 +1,34 @@
-//! Currently the mysql and postgres implementations are exactly the same.
-//! I tried generic and macro, both failed.So this is it.
-//!
-
 use async_trait::async_trait;
 
 use crate::{Leaf, Result};
 
 #[cfg(feature = "mysql")]
 pub mod mysql;
+#[cfg(feature = "mysql")]
+pub use mysql::MySqlLeafDao;
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "postgres")]
+pub use postgres::PgLeafDao;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteLeafDao;
 
 #[cfg(feature = "redis")]
 pub mod redis;
+#[cfg(feature = "redis")]
+pub use redis::RedisDao;
 
 #[cfg(feature = "mongo")]
-pub mod mongodb;
+pub mod mongo;
+#[cfg(feature = "mongo")]
+pub use mongo::MongoLeafDao;
 
 pub mod mock;
+pub use mock::MockLeafDao;
 
 #[async_trait]
 pub trait LeafDao {
