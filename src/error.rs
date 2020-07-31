@@ -21,8 +21,8 @@ pub enum Error {
     MongoDB(#[from] mongodb::error::Error),
     #[cfg(feature = "mongo")]
     #[error("bson encoder error")]
-    BsonEncode(#[from] bson::EncoderError),
+    BsonEncode(#[from] bson::ser::Error),
     #[cfg(feature = "mongo")]
     #[error("bson decoder error")]
-    BsonDecode(#[from] bson::DecoderError),
+    BsonDecode(#[from] bson::de::Error),
 }

@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use mongodb::{Client, options::ClientOptions};
+use mongodb::{options::ClientOptions, Client};
 
-use leaves::{Leaf, LeafDao, SegmentIDGen};
+use leaves::segment::Config;
+use leaves::SegmentIDGen;
 
 #[tokio::test]
 async fn test_with_mongodb() {
@@ -11,8 +12,8 @@ async fn test_with_mongodb() {
     let client_options = ClientOptions::parse(url.as_str()).await.unwrap();
     let client = Client::with_options(client_options).unwrap();
     let collection = client.database("test_leaves").collection("leaves");
-    let dao = Arc::new(leaves::dao::mongodb::MongoLeafDao::new(collection));
-    let mut service = SegmentIDGen::new(dao.clone());
+    let dao = Arc::new(leaves::dao::MongoLeafDao::new(collection));
+    let mut service = SegmentIDGen::new(dao.clone(), Config::new());
     service.init().await.unwrap();
     // dao.insert(Leaf {
     //     tag: 1,

@@ -39,9 +39,12 @@ async-std = { version = "1.6", optional=true  }
 
 darkredis = { version="0.7", default-features = false, optional=true }
 sqlx = { version="0.3", default-features = false, features=["macros"] , optional=true }
-mongodb = { version="0.10", default-features = false, optional=true }
-bson = { version="0.14", optional=true }
+mongodb = { version="1.1.0-beta", default-features = false, optional=true }
+bson = { version="1.1.0-beta", optional=true }
 
+
+[dev-dependencies]
+dotenv = "0.15"
 
 [package.metadata.docs.rs]
 features = ["mysql", "postgres", "sqlite", "redis", "mongo"]
