@@ -39,12 +39,15 @@ async-std = { version = "1.6", optional=true  }
 
 darkredis = { version="0.7", default-features = false, optional=true }
 sqlx = { version="0.3", default-features = false, features=["macros"] , optional=true }
-mongodb = { version="1.1.0-beta", default-features = false, optional=true }
-bson = { version="1.1.0-beta", optional=true }
+mongodb = { version="1.1.0", default-features = false, optional=true }
+bson = { version="1.1.0", optional=true }
+event-listener = "2.3"
 
 
 [dev-dependencies]
 dotenv = "0.15"
+criterion = "0.3"
+fastrand = "1.3"
 
 [package.metadata.docs.rs]
 features = ["mysql", "postgres", "sqlite", "redis", "mongo"]
@@ -60,11 +63,6 @@ name = "mysql"
 path = "examples/mysql.rs"
 required-features = ["mysql", "tokio/macros"]
 
-[[example]]
-name = "mock"
-path = "examples/mock.rs"
-required-features = ["tokio/macros"]
-
 [[test]]
 name = "mongodb"
 path = "tests/mongodb.rs"
@@ -74,3 +72,7 @@ required-features = ["mongo", "tokio/macros"]
 name = "redis"
 path = "tests/redis.rs"
 required-features = ["redis", "tokio/macros"]
+
+[[bench]]
+name = "segment"
+harness = false

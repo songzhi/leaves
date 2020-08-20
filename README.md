@@ -15,6 +15,7 @@ This is a unofficial port of [Leaf](https://github.com/Meituan-Dianping/Leaf).
 - [x] sqlite
 - [x] mongodb
 - [x] runtime-agnostic(tokio or async-std) when using mysql or postgres
+- [x] lazy mode: fetch leaf by tag lazily and needs remove it manually
 - [ ] http server or rpc service(actually just implement it by yourself 😂)
 
 ## TODO
@@ -40,4 +41,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-1,000,000 id in 150ms(mocked database in memory with R7 3700X)
+1,000,000 IDs in 180ms(local MongoDB with R7 3700X)

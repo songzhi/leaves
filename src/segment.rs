@@ -9,6 +9,7 @@ use dashmap::DashMap;
 use crate::{Error, LeafDao, Result};
 
 use super::utils;
+use event_listener::Event;
 
 type Cache = Arc<DashMap<i32, Arc<Mutex<SegmentBuffer>>>>;
 
@@ -141,8 +142,8 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
             && !buffer
-                .thread_running
-                .compare_and_swap(false, true, Ordering::Relaxed)
+                .bg_task_running
+                .compare_and_swap(false, true, Ordering::SeqCst)
         {
             let buffer_wrapped = buffer_wrapped.clone();
             utils::spawn(async move {
@@ -155,25 +156,32 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                     buffer.next_ready = true;
                 }
                 let buffer = buffer_wrapped.lock().await;
-                buffer.thread_running.store(false, Ordering::Relaxed);
+                buffer.bg_task_running.store(false, Ordering::SeqCst);
+                buffer.bg_task_finished.notify(usize::MAX);
             });
         }
-        let val = segment.val.fetch_add(1, Ordering::Relaxed);
+        let val = segment.val.fetch_add(1, Ordering::SeqCst);
         if val < segment.max {
             Ok(val)
         } else {
-            drop(buffer); // prevent deadlock
-            Self::wait_and_sleep(buffer_wrapped.clone()).await?;
+            // waits until background task finished
+            if buffer.bg_task_running.load(Ordering::SeqCst) {
+                let listener = buffer.bg_task_finished.listen();
+                drop(buffer);
+                listener.await;
+            } else {
+                drop(buffer);
+            }
             let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
-            let val = segment.val.fetch_add(1, Ordering::Relaxed);
+            let val = segment.val.fetch_add(1, Ordering::SeqCst);
             if val < segment.max {
                 Ok(val)
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
                 buffer.switch();
                 buffer.next_ready = false;
-                Ok(buffer.current().val.fetch_add(1, Ordering::Relaxed))
+                Ok(buffer.current().val.fetch_add(1, Ordering::SeqCst))
             } else {
                 Err(Error::BothSegmentsNotReady)
             }
@@ -229,22 +237,9 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         };
         segment
             .val
-            .store(leaf.max_id - step as i64, Ordering::Relaxed);
+            .store(leaf.max_id - step as i64, Ordering::SeqCst);
         segment.max = leaf.max_id;
         segment.step = step;
-        Ok(())
-    }
-
-    async fn wait_and_sleep(buffer: Arc<Mutex<SegmentBuffer>>) -> Result<()> {
-        let mut roll = 0;
-        let buffer = buffer.lock().await;
-        while buffer.thread_running.load(Ordering::Relaxed) {
-            roll += 1;
-            if roll > 10_000 {
-                utils::sleep(Duration::from_millis(10)).await;
-                break;
-            }
-        }
         Ok(())
     }
 }
@@ -277,7 +272,7 @@ impl Segment {
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
+        self.max.saturating_sub(self.val.load(Ordering::SeqCst))
     }
 }
 
@@ -285,11 +280,12 @@ impl Segment {
 pub struct SegmentBuffer {
     pub init_ok: bool,
     pub next_ready: bool,
-    pub(crate) thread_running: AtomicBool,
-    pub(crate) updated_at: Instant,
-    pub(crate) step: i32,
-    pub(crate) min_step: i32,
     pub tag: i32,
+    bg_task_running: AtomicBool,
+    bg_task_finished: Event,
+    updated_at: Instant,
+    step: i32,
+    min_step: i32,
     segments: [Segment; 2],
     current_idx: usize,
 }
@@ -300,7 +296,8 @@ impl SegmentBuffer {
         Self {
             init_ok: false,
             next_ready: false,
-            thread_running: false.into(),
+            bg_task_running: false.into(),
+            bg_task_finished: Event::new(),
             updated_at: Instant::now(),
             step: 0,
             min_step: 0,
