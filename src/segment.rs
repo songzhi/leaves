@@ -143,7 +143,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             && (segment.idle() < (segment.step * 9 / 10) as i64)
             && !buffer
                 .bg_task_running
-                .compare_and_swap(false, true, Ordering::SeqCst)
+                .compare_and_swap(false, true, Ordering::Relaxed)
         {
             let buffer_wrapped = buffer_wrapped.clone();
             utils::spawn(async move {
@@ -160,7 +160,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                 buffer.bg_task_finished.notify(usize::MAX);
             });
         }
-        let val = segment.val.fetch_add(1, Ordering::SeqCst);
+        let val = segment.val.fetch_add(1, Ordering::Relaxed);
         if val < segment.max {
             Ok(val)
         } else {
@@ -174,14 +174,14 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             }
             let mut buffer = buffer_wrapped.lock().await;
             let segment = buffer.current();
-            let val = segment.val.fetch_add(1, Ordering::SeqCst);
+            let val = segment.val.fetch_add(1, Ordering::Relaxed);
             if val < segment.max {
                 Ok(val)
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
                 buffer.switch();
                 buffer.next_ready = false;
-                Ok(buffer.current().val.fetch_add(1, Ordering::SeqCst))
+                Ok(buffer.current().val.fetch_add(1, Ordering::Relaxed))
             } else {
                 Err(Error::BothSegmentsNotReady)
             }
@@ -237,7 +237,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         };
         segment
             .val
-            .store(leaf.max_id - step as i64, Ordering::SeqCst);
+            .store(leaf.max_id - step as i64, Ordering::Relaxed);
         segment.max = leaf.max_id;
         segment.step = step;
         Ok(())
@@ -272,7 +272,7 @@ impl Segment {
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max.saturating_sub(self.val.load(Ordering::SeqCst))
+        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
     }
 }
 
