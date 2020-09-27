@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use leaves::dao::mock::MockLeafDao;
 
 use leaves::segment::Config;
@@ -26,9 +26,7 @@ fn bench_mock(c: &mut Criterion) {
     c.bench_function(id, |b| {
         b.iter(|| {
             rt.block_on(async {
-                for _ in black_box(0..1000) {
-                    service.get(tag).await.unwrap();
-                }
+                service.get(tag).await.unwrap();
             });
         })
     });
