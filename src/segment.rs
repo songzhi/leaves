@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -136,14 +136,14 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         config: Config,
         buffer_wrapped: Arc<Mutex<SegmentBuffer>>,
     ) -> Result<i64> {
-        let buffer = buffer_wrapped.lock().await;
+        let mut buffer = buffer_wrapped.lock().await;
         let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
             && !buffer
                 .bg_task_running
-                .compare_and_swap(false, true, Ordering::Relaxed)
+                .compare_and_swap(false, true, Ordering::Acquire)
         {
             let buffer_wrapped = buffer_wrapped.clone();
             utils::spawn(async move {
@@ -156,11 +156,13 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                     buffer.next_ready = true;
                 }
                 let buffer = buffer_wrapped.lock().await;
-                buffer.bg_task_running.store(false, Ordering::SeqCst);
-                buffer.bg_task_finished.notify(usize::MAX);
+                buffer.bg_task_running.store(false, Ordering::Release);
+                buffer.bg_task_finished.notify(std::usize::MAX);
             });
         }
-        let val = segment.val.fetch_add(1, Ordering::Relaxed);
+        let segment = buffer.current_mut();
+        let val = segment.val;
+        segment.val += 1;
         if val < segment.max {
             Ok(val)
         } else {
@@ -173,15 +175,18 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                 drop(buffer);
             }
             let mut buffer = buffer_wrapped.lock().await;
-            let segment = buffer.current();
-            let val = segment.val.fetch_add(1, Ordering::Relaxed);
+            let segment = buffer.current_mut();
+            let val = segment.val;
+            segment.val += 1;
             if val < segment.max {
                 Ok(val)
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
                 buffer.switch();
                 buffer.next_ready = false;
-                Ok(buffer.current().val.fetch_add(1, Ordering::Relaxed))
+                let val = buffer.current_mut().val;
+                buffer.current_mut().val += 1;
+                Ok(val)
             } else {
                 Err(Error::BothSegmentsNotReady)
             }
@@ -235,9 +240,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         } else {
             buffer.current_mut()
         };
-        segment
-            .val
-            .store(leaf.max_id - step as i64, Ordering::Relaxed);
+        segment.val = leaf.max_id - step as i64;
         segment.max = leaf.max_id;
         segment.step = step;
         Ok(())
@@ -246,7 +249,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
 
 #[derive(Debug, Default)]
 pub struct Segment {
-    pub val: AtomicI64,
+    pub val: i64,
     pub max: i64,
     pub step: i32,
 }
@@ -264,15 +267,11 @@ impl fmt::Display for Segment {
 impl Segment {
     #[inline]
     pub fn new(val: i64, max: i64, step: i32) -> Self {
-        Self {
-            val: val.into(),
-            max,
-            step,
-        }
+        Self { val, max, step }
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
+        self.max.saturating_sub(self.val)
     }
 }
 
