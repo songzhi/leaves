@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::time::Duration;
 
-use crate::{Error, Leaf, Result};
+use crate::{utils::sleep, Error, Leaf, Result};
 
 use super::LeafDao;
+
 
 #[derive(Debug, Default)]
 pub struct MockLeafDao {
@@ -33,6 +35,7 @@ impl LeafDao for MockLeafDao {
     }
 
     async fn update_max(&self, tag: i32) -> Result<Leaf> {
+        sleep(Duration::from_millis(200)).await;
         self.leaves
             .update_get(&tag, |_, leaf| {
                 let max_id = leaf.max_id + leaf.step as i64;
@@ -43,6 +46,7 @@ impl LeafDao for MockLeafDao {
     }
 
     async fn update_max_by_step(&self, tag: i32, step: i32) -> Result<Leaf> {
+        sleep(Duration::from_millis(200)).await;
         self.leaves
             .update_get(&tag, |_, leaf| {
                 let max_id = leaf.max_id + step as i64;
