@@ -1,17 +1,17 @@
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_mutex::Mutex;
 use dashmap::DashMap;
 
 use crate::{Error, LeafDao, Result};
 
 use super::utils;
 use event_listener::Event;
+use async_rwlock::{RwLock, RwLockUpgradableReadGuard};
 
-type Cache = Arc<DashMap<i32, Arc<Mutex<SegmentBuffer>>>>;
+type Cache = Arc<DashMap<i32, Arc<RwLock<SegmentBuffer>>>>;
 
 pub struct SegmentIDGen<D> {
     dao: Arc<D>,
@@ -46,7 +46,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             return Err(Error::ServiceNotReady);
         }
         let buffer = self.get_segment_buffer(tag).await?;
-        if !buffer.lock().await.init_ok {
+        if !buffer.read().await.init_ok {
             tracing::info!("Init Buffer[{}]", tag);
             Self::update_segment_from_db(
                 self.dao.clone(),
@@ -55,7 +55,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                 true,
                 self.config,
             )
-            .await?;
+                .await?;
         }
         Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await
     }
@@ -71,7 +71,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         self.cache.remove(&tag)
     }
 
-    async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
+    async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<RwLock<SegmentBuffer>>> {
         if let Some(entry) = self.cache.get(&tag) {
             Ok(entry.value().clone())
         } else if self.config.is_lazy {
@@ -79,7 +79,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             if let Some(entry) = self.cache.get(&tag) {
                 Ok(entry.value().clone())
             } else {
-                let buffer = Arc::new(Mutex::new(SegmentBuffer::new(tag)));
+                let buffer = Arc::new(RwLock::new(SegmentBuffer::new(tag)));
                 self.cache.insert(tag, buffer.clone());
                 Ok(buffer)
             }
@@ -122,7 +122,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             .collect::<Vec<_>>();
         for t in insert_tags {
             tracing::info!("Add tag[{}] to cache", t);
-            cache.insert(t, Arc::new(Mutex::new(SegmentBuffer::new(t))));
+            cache.insert(t, Arc::new(RwLock::new(SegmentBuffer::new(t))));
         }
         for t in remove_tags {
             tracing::info!("Remove tag[{}] from cache", t);
@@ -134,16 +134,16 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     async fn get_id_from_segment_buffer(
         dao: Arc<D>,
         config: Config,
-        buffer_wrapped: Arc<Mutex<SegmentBuffer>>,
+        buffer_wrapped: Arc<RwLock<SegmentBuffer>>,
     ) -> Result<i64> {
-        let mut buffer = buffer_wrapped.lock().await;
+        let buffer = buffer_wrapped.read().await;
         let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
             && (segment.idle() < (segment.step * 9 / 10) as i64)
             && !buffer
-                .bg_task_running
-                .compare_and_swap(false, true, Ordering::Acquire)
+            .bg_task_running
+            .compare_and_swap(false, true, Ordering::Acquire)
         {
             let buffer_wrapped = buffer_wrapped.clone();
             utils::spawn(async move {
@@ -152,17 +152,16 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
                     .is_ok()
                 {
                     tracing::info!("Update Buffer[{}]'s next segment from DB", tag);
-                    let mut buffer = buffer_wrapped.lock().await;
+                    let mut buffer = buffer_wrapped.write().await;
                     buffer.next_ready = true;
                 }
-                let buffer = buffer_wrapped.lock().await;
+                let buffer = buffer_wrapped.read().await;
                 buffer.bg_task_running.store(false, Ordering::Release);
                 buffer.bg_task_finished.notify(std::usize::MAX);
             });
         }
-        let segment = buffer.current_mut();
-        let val = segment.val;
-        segment.val += 1;
+        let segment = buffer.current();
+        let val = segment.val.fetch_add(1, Ordering::Relaxed);
         if val < segment.max {
             Ok(val)
         } else {
@@ -174,18 +173,17 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             } else {
                 drop(buffer);
             }
-            let mut buffer = buffer_wrapped.lock().await;
-            let segment = buffer.current_mut();
-            let val = segment.val;
-            segment.val += 1;
+            let buffer = buffer_wrapped.upgradable_read().await;
+            let segment = buffer.current();
+            let val = segment.val.fetch_add(1, Ordering::Relaxed);
             if val < segment.max {
                 Ok(val)
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
+                let mut buffer = RwLockUpgradableReadGuard::upgrade(buffer).await;
                 buffer.switch();
                 buffer.next_ready = false;
-                let val = buffer.current_mut().val;
-                buffer.current_mut().val += 1;
+                let val = buffer.current().val.fetch_add(1, Ordering::Relaxed);
                 Ok(val)
             } else {
                 Err(Error::BothSegmentsNotReady)
@@ -195,12 +193,12 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
 
     async fn update_segment_from_db(
         dao: Arc<D>,
-        buffer: Arc<Mutex<SegmentBuffer>>,
+        buffer: Arc<RwLock<SegmentBuffer>>,
         is_next: bool,
         is_init: bool,
         config: Config,
     ) -> Result<()> {
-        let mut buffer = buffer.lock().await;
+        let mut buffer = buffer.write().await;
         if is_init && buffer.init_ok {
             return Ok(());
         }
@@ -240,7 +238,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         } else {
             buffer.current_mut()
         };
-        segment.val = leaf.max_id - step as i64;
+        segment.val.store(leaf.max_id - step as i64, Ordering::Relaxed);
         segment.max = leaf.max_id;
         segment.step = step;
         Ok(())
@@ -249,7 +247,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
 
 #[derive(Debug, Default)]
 pub struct Segment {
-    pub val: i64,
+    pub val: AtomicI64,
     pub max: i64,
     pub step: i32,
 }
@@ -267,11 +265,11 @@ impl fmt::Display for Segment {
 impl Segment {
     #[inline]
     pub fn new(val: i64, max: i64, step: i32) -> Self {
-        Self { val, max, step }
+        Self { val: val.into(), max, step }
     }
     #[inline]
     pub fn idle(&self) -> i64 {
-        self.max.saturating_sub(self.val)
+        self.max.saturating_sub(self.val.load(Ordering::Relaxed))
     }
 }
 
