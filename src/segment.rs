@@ -57,7 +57,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             )
                 .await?;
         }
-        Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await
+        Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await.map(|t| t.0)
     }
 
     /// Update from database
@@ -70,6 +70,33 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     /// Remove from cache, useful in lazy mode.
     pub async fn remove(&self, tag: i32) -> bool {
         self.cache.remove(&tag)
+    }
+
+    /// Get a guard protecting a specific tag, which means it could be used to allocate ID multiple times.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use leaves::{SegmentIDGen, Leaf};
+    /// use std::sync::Arc;
+    /// use leaves::dao::MockLeafDao;
+    /// use leaves::segment::Config;
+    ///
+    /// let dao = Arc::new(MockLeafDao::default());
+    /// let service = SegmentIDGen::new(dao, Config::new());
+    /// let mut tag_guard = service.get_tag_guard(1).await?;
+    /// for _ in 0..100 {
+    ///     tag_guard.get().await.unwrap();
+    /// }
+    /// ```
+    pub async fn get_tag_guard(&self, tag: i32) -> Result<SegmentIDGenTagGuard<D>> {
+        let buffer = self.get_segment_buffer(tag).await?.lock_arc().await;
+        let guard = SegmentIDGenTagGuard {
+            dao: self.dao.clone(),
+            buffer: Some(buffer),
+            config: self.config,
+        };
+
+        Ok(guard)
     }
 
     async fn get_segment_buffer(&self, tag: i32) -> Result<Arc<Mutex<SegmentBuffer>>> {
@@ -136,7 +163,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         dao: Arc<D>,
         config: Config,
         mut buffer: MutexGuardArc<SegmentBuffer>,
-    ) -> Result<i64> {
+    ) -> Result<(i64, MutexGuardArc<SegmentBuffer>)> {
         let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
@@ -145,17 +172,26 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             .bg_task_running
             .compare_and_swap(false, true, Ordering::Acquire)
         {
-            buffer = Self::update_segment_from_db(dao, buffer, true, false, config).await?;
-            tracing::info!("Update Buffer[{}]'s next segment from DB", tag);
-            buffer.next_ready = true;
-            buffer.bg_task_running.store(false, Ordering::Release);
-            buffer.bg_task_finished.notify(std::usize::MAX);
+            let buffer_mutex = MutexGuardArc::source(&buffer).clone();
+            let buffer_mutex_ = buffer_mutex.clone();
+            utils::spawn(async move {
+                if let Ok(mut buffer_) = Self::update_segment_from_db(dao, buffer, true, false, config).await {
+                    tracing::info!("Update Buffer[{}]'s next segment from DB", tag);
+                    buffer_.next_ready = true;
+                    buffer = buffer_;
+                } else {
+                    buffer = buffer_mutex.lock_arc().await;
+                }
+                buffer.bg_task_running.store(false, Ordering::Release);
+                buffer.bg_task_finished.notify(std::usize::MAX);
+            });
+            buffer = buffer_mutex_.lock_arc().await;
         }
         let segment = buffer.current_mut();
         let val = segment.val;
         segment.val += 1;
         if val < segment.max {
-            Ok(val)
+            Ok((val, buffer))
         } else {
             // waits until background task finished
             buffer = if buffer.bg_task_running.load(Ordering::Acquire) {
@@ -171,14 +207,14 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             let val = segment.val;
             segment.val += 1;
             if val < segment.max {
-                Ok(val)
+                Ok((val, buffer))
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
                 buffer.switch();
                 buffer.next_ready = false;
                 let val = buffer.current_mut().val;
                 buffer.current_mut().val += 1;
-                Ok(val)
+                Ok((val, buffer))
             } else {
                 Err(Error::BothSegmentsNotReady)
             }
@@ -237,6 +273,35 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         Ok(buffer)
     }
 }
+
+/// An owned IDGen guarding a specific tag.
+/// It's like `MutexGuard`, there can only be one guard of a tag at a time.
+pub struct SegmentIDGenTagGuard<D> {
+    dao: Arc<D>,
+    buffer: Option<MutexGuardArc<SegmentBuffer>>,
+    config: Config,
+}
+
+impl<D: 'static + LeafDao + Send + Sync> SegmentIDGenTagGuard<D> {
+    pub async fn get(&mut self) -> Result<i64> {
+        let mut buffer = self.buffer.take().unwrap();
+        if !buffer.init_ok {
+            buffer = SegmentIDGen::update_segment_from_db(
+                self.dao.clone(),
+                buffer,
+                false,
+                true,
+                self.config,
+            )
+                .await?;
+        }
+        let (id, buffer) = SegmentIDGen::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await?;
+        self.buffer.replace(buffer);
+        Ok(id)
+    }
+}
+
+unsafe impl<D: 'static + LeafDao + Send + Sync> Send for SegmentIDGenTagGuard<D> {}
 
 #[derive(Debug, Default)]
 pub struct Segment {

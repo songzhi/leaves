@@ -13,8 +13,9 @@ async fn mock(service: Arc<SegmentIDGen<MockLeafDao>>, tags: i32) {
         .map(|tag| {
             let service = service.clone();
             tokio::spawn(async move {
+                let mut guard = service.get_tag_guard(tag).await.unwrap();
                 for _ in 0..10000 {
-                    service.get(tag).await.ok();
+                    guard.get().await.ok();
                 }
             })
         })

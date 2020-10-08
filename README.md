@@ -41,4 +41,4 @@ async main() -> Result<()> {
 ```
 
 ## Benchmark
-1,000,000 IDs in 180ms(local MongoDB with R7 3700X)
+1,000,000 IDs in 35ms(local MongoDB with R7 3700X)
