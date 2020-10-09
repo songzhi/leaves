@@ -14,20 +14,38 @@ async fn test_with_mongodb() {
     let client = Client::with_options(client_options).unwrap();
     let collection = client.database("test_leaves").collection("leaves");
     let dao = Arc::new(leaves::dao::MongoLeafDao::new(collection));
-    let tag = fastrand::i32(1..1_000_000);
-    dao.insert(Leaf {
-        tag,
-        max_id: 0,
-        step: 1000,
-    })
+    let tags = (0..5)
+        .map(|_| fastrand::i32(1..1_000_000))
+        .collect::<Vec<_>>();
+    for &tag in tags.iter() {
+        dao.insert(Leaf {
+            tag,
+            max_id: 0,
+            step: 1000,
+        })
         .await
         .unwrap();
-    let mut service = SegmentIDGen::new(dao.clone(), Config::new());
+    }
+    let mut service = SegmentIDGen::new(dao, Config::new());
     service.init().await.unwrap();
-    let mut guard = service.get_tag_guard(tag).await.unwrap();
+    let service = Arc::new(service);
     let start = Instant::now();
-    for _ in 0..100_0000 {
-        guard.get().await.ok();
+    let tasks = tags
+        .into_iter()
+        .cycle()
+        .take(5)
+        .map(|tag| {
+            let service = service.clone();
+            tokio::spawn(async move {
+                let mut guard = service.get_tag_guard(tag).await.unwrap();
+                for _ in 0..40000 {
+                    guard.get().await.ok();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for t in tasks {
+        t.await.ok();
     }
     println!("{}ms", start.elapsed().as_millis());
 }
