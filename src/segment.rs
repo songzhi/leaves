@@ -41,6 +41,21 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     }
 
     /// Get an ID
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use leaves::{SegmentIDGen, Leaf, LeafDao};
+    /// use std::sync::Arc;
+    /// use leaves::dao::MockLeafDao;
+    /// use leaves::segment::Config;
+    ///
+    /// let dao = Arc::new(MockLeafDao::default());
+    /// dao.insert(Leaf {tag: 1, max_id: 1000, step: 1000});
+    /// let service = SegmentIDGen::new(dao, Config::new());
+    /// for _ in 0..100 {
+    ///     service.get(1).await.unwrap();
+    /// }
+    /// ```
     pub async fn get(&self, tag: i32) -> Result<i64> {
         if !self.init_ok {
             return Err(Error::ServiceNotReady);
@@ -53,7 +68,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         }
         Self::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer)
             .await
-            .map(|t| t.0)
+            .0
     }
 
     /// Update from database
@@ -73,12 +88,13 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
     ///
     /// # Examples
     /// ```no_run
-    /// use leaves::{SegmentIDGen, Leaf};
+    /// use leaves::{SegmentIDGen, Leaf, LeafDao};
     /// use std::sync::Arc;
     /// use leaves::dao::MockLeafDao;
     /// use leaves::segment::Config;
     ///
     /// let dao = Arc::new(MockLeafDao::default());
+    /// dao.insert(Leaf {tag: 1, max_id: 1000, step: 1000});
     /// let service = SegmentIDGen::new(dao, Config::new());
     /// let mut tag_guard = service.get_tag_guard(1).await?;
     /// for _ in 0..100 {
@@ -160,7 +176,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         dao: Arc<D>,
         config: Config,
         mut buffer: MutexGuardArc<SegmentBuffer>,
-    ) -> Result<(i64, MutexGuardArc<SegmentBuffer>)> {
+    ) -> (Result<i64>, MutexGuardArc<SegmentBuffer>) {
         let tag = buffer.tag;
         let segment = buffer.current();
         if !buffer.next_ready
@@ -187,7 +203,7 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
         let val = segment.val;
         segment.val += 1;
         if val < segment.max {
-            Ok((val, buffer))
+            (Ok(val), buffer)
         } else {
             // waits until background task finished
             buffer = if buffer.bg_task_running.load(Ordering::Acquire) {
@@ -203,16 +219,16 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGen<D> {
             let val = segment.val;
             segment.val += 1;
             if val < segment.max {
-                Ok((val, buffer))
+                (Ok(val), buffer)
             } else if buffer.next_ready {
                 tracing::info!("Buffer[{}] switched", tag);
                 buffer.switch();
                 buffer.next_ready = false;
                 let val = buffer.current_mut().val;
                 buffer.current_mut().val += 1;
-                Ok((val, buffer))
+                (Ok(val), buffer)
             } else {
-                Err(Error::BothSegmentsNotReady)
+                (Err(Error::BothSegmentsNotReady), buffer)
             }
         }
     }
@@ -292,9 +308,9 @@ impl<D: 'static + LeafDao + Send + Sync> SegmentIDGenTagGuard<D> {
             .await?;
         }
         let (id, buffer) =
-            SegmentIDGen::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await?;
+            SegmentIDGen::get_id_from_segment_buffer(self.dao.clone(), self.config, buffer).await;
         self.buffer.replace(buffer);
-        Ok(id)
+        id
     }
 }
 
